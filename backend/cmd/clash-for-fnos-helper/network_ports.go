@@ -58,7 +58,55 @@ func networkListeners(raw string) []networkListener {
 			result = append(result, networkListener{"udp", address, item.label})
 		}
 	}
+	result = append(result, dnsListeners(raw)...)
 	return result
+}
+
+// dnsListeners returns the Mihomo DNS listener so port 53 conflicts are
+// reported before the Core is restarted. It is empty when DNS is disabled or
+// no listen address is configured.
+func dnsListeners(raw string) []networkListener {
+	if !yamlNestedBoolean(raw, "dns", "enable", false) {
+		return nil
+	}
+	listen := strings.TrimSpace(yamlNestedString(raw, "dns", "listen", ""))
+	if listen == "" {
+		return nil
+	}
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		if value, parseErr := strconv.Atoi(listen); parseErr == nil {
+			host, port = "0.0.0.0", strconv.Itoa(value)
+		} else {
+			return nil
+		}
+	}
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	if net.ParseIP(host) == nil {
+		return nil
+	}
+	address := net.JoinHostPort(host, port)
+	return []networkListener{{"tcp", address, "Mihomo DNS 监听端口"}, {"udp", address, "Mihomo DNS 监听端口"}}
+}
+
+// dnsLANReachable reports whether the configured DNS listener accepts
+// connections from LAN clients.
+func dnsLANReachable(raw string) bool {
+	if !yamlNestedBoolean(raw, "dns", "enable", false) {
+		return false
+	}
+	listen := strings.TrimSpace(yamlNestedString(raw, "dns", "listen", ""))
+	if listen == "" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return true // bare port binds all interfaces
+	}
+	ip := net.ParseIP(host)
+	return host == "" || ip == nil || !ip.IsLoopback()
 }
 func configuredNetworkListeners(raw string) ([]networkListener, error) {
 	next := networkListeners(raw)

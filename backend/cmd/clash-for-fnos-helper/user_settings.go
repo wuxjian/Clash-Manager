@@ -146,7 +146,13 @@ func (h *helper) composeUserSettings(input map[string]any) (map[string]any, erro
 		return nil, err
 	}
 	if enabled, _ := input["dnsOverrideEnabled"].(bool); enabled {
-		if dns, ok := input["dns"].(map[string]any); ok {
+		if stringField(input, "dnsEditorMode") == "yaml" && stringField(input, "dnsYAML") != "" {
+			_, parsed, err := normalizeDNSYAML(stringField(input, "dnsYAML"))
+			if err != nil {
+				return nil, err
+			}
+			settings["dns"] = parsed
+		} else if dns, ok := input["dns"].(map[string]any); ok {
 			normalized, hosts := normalizeDNSForYAML(dns)
 			var parsed map[string]any
 			if err = yaml.Unmarshal([]byte(renderYAML("dns", normalized)), &parsed); err != nil {
@@ -166,7 +172,19 @@ func (h *helper) composeUserSettings(input map[string]any) (map[string]any, erro
 	config := scopeConfig(store, scope)
 	delete(settings, configyaml.IndependentListenersKey)
 	delete(settings, independentProfilesKey)
-	content, err := configyaml.MergeOverrides([]byte(stringField(input, "content")), settings)
+	content := []byte(stringField(input, "content"))
+	if policy, ok := input["quicPolicy"].(map[string]any); ok {
+		domestic, _ := policy["domestic"].(string)
+		foreign, _ := policy["foreign"].(string)
+		rules := configyaml.QUICRules(configyaml.QUICPolicy{Domestic: domestic, Foreign: foreign})
+		if len(rules) > 0 {
+			content, err = configyaml.PrependRules(content, rules)
+			if err != nil {
+				return nil, fail(400, err.Error())
+			}
+		}
+	}
+	content, err = configyaml.MergeOverrides(content, settings)
 	if err != nil {
 		return nil, fmt.Errorf("合并用户设置失败: %w", err)
 	}

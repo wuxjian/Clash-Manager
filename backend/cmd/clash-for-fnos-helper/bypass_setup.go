@@ -31,10 +31,17 @@ type bypassState struct {
 	Interface       bypassInterface `json:"interface"`
 	Port            int             `json:"port"`
 	PreviousForward string          `json:"previousForward"`
+	WANInterface    string          `json:"wanInterface,omitempty"`
+	DNSHijack       bool            `json:"dnsHijack,omitempty"`
+	DNSPort         int             `json:"dnsPort,omitempty"`
+	DockerRule      bool            `json:"dockerRule,omitempty"`
 	CorePID         int             `json:"corePID"`
 	RouteAdded      bool            `json:"routeAdded"`
 	RuleAdded       bool            `json:"ruleAdded"`
 	TableAdded      bool            `json:"tableAdded"`
+	// DockerAvailable and Warnings are runtime-only and never persisted.
+	DockerAvailable bool     `json:"-"`
+	Warnings        []string `json:"-"`
 }
 type bypassSystem struct {
 	process      func() *processInfo
@@ -44,6 +51,9 @@ type bypassSystem struct {
 	run          func(context.Context, string, string, ...string) ([]byte, error)
 	readForward  func() (string, error)
 	writeForward func(string) error
+	wan          func(context.Context) string
+	ipv6Route    func(context.Context) bool
+	dockerChain  func(context.Context) bool
 }
 
 func (h *helper) bypassOS() *bypassSystem {
@@ -84,7 +94,13 @@ func (h *helper) readBypassState() (*bypassState, error) {
 	if err = json.Unmarshal(raw, &s); err != nil {
 		return nil, err
 	}
-	if s.Schema != 1 || !regexp.MustCompile(`^[a-f0-9]{32}$`).MatchString(s.Token) || (s.Mode != "redir" && s.Mode != "tproxy") || (s.PreviousForward != "0" && s.PreviousForward != "1") {
+	if s.Schema != 1 && s.Schema != 2 || !regexp.MustCompile(`^[a-f0-9]{32}$`).MatchString(s.Token) || (s.Mode != "redir" && s.Mode != "tproxy") || (s.PreviousForward != "0" && s.PreviousForward != "1") {
+		return nil, errors.New("接管恢复记录无效，拒绝修改系统")
+	}
+	if s.WANInterface != "" && !regexp.MustCompile(`^[a-zA-Z0-9_.:-]{1,15}$`).MatchString(s.WANInterface) {
+		return nil, errors.New("接管恢复记录无效，拒绝修改系统")
+	}
+	if s.DNSPort != 0 && (s.DNSPort < 1 || s.DNSPort > 65535) {
 		return nil, errors.New("接管恢复记录无效，拒绝修改系统")
 	}
 	return &s, nil
@@ -114,12 +130,37 @@ func validBypassInterface(i bypassInterface) bool {
 func bypassRules(s *bypassState) string {
 	_, network, _ := net.ParseCIDR(s.Interface.CIDR)
 	match := fmt.Sprintf("iifname %q ip saddr %s", s.Interface.Name, network.String())
-	// DNS remains on the device's existing path; no implicit DNS hijack/listener.
+	// The capture chain never sees DNS; a dedicated nat chain redirects port 53
+	// to the already configured Mihomo DNS listener.
 	skip := fmt.Sprintf("%s meta mark != 0 return\n%s fib daddr type local return\n%s ip daddr { 0.0.0.0/8, 10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return\n%s meta l4proto { tcp, udp } th dport 53 return\n", match, match, match, match)
+	var out strings.Builder
+	fmt.Fprintf(&out, "create table ip %s { comment \"clash-manager:%s\"; }\n", bypassTable, s.Token)
 	if s.Mode == "redir" {
-		return fmt.Sprintf("create table ip %s { comment \"clash-manager:%s\"; }\nadd chain ip %s capture { type nat hook prerouting priority dstnat; policy accept; }\n", bypassTable, s.Token, bypassTable) + prefixBypassRules(skip) + fmt.Sprintf("add rule ip %s capture %s meta l4proto tcp redirect to :%d\n", bypassTable, match, s.Port)
+		fmt.Fprintf(&out, "add chain ip %s capture { type nat hook prerouting priority dstnat; policy accept; }\n", bypassTable)
+		out.WriteString(prefixBypassRules(skip))
+		fmt.Fprintf(&out, "add rule ip %s capture %s meta l4proto tcp redirect to :%d\n", bypassTable, match, s.Port)
+	} else {
+		fmt.Fprintf(&out, "add chain ip %s capture { type filter hook prerouting priority mangle; policy accept; }\n", bypassTable)
+		out.WriteString(prefixBypassRules(skip))
+		fmt.Fprintf(&out, "add rule ip %s capture %s meta l4proto { tcp, udp } tproxy to :%d meta mark set 0x434d accept\n", bypassTable, match, s.Port)
 	}
-	return fmt.Sprintf("create table ip %s { comment \"clash-manager:%s\"; }\nadd chain ip %s capture { type filter hook prerouting priority mangle; policy accept; }\n", bypassTable, s.Token, bypassTable) + prefixBypassRules(skip) + fmt.Sprintf("add rule ip %s capture %s meta l4proto { tcp, udp } tproxy to :%d meta mark set 0x434d accept\n", bypassTable, match, s.Port)
+	if s.DNSHijack && s.DNSPort > 0 {
+		// -110 runs before the dstnat capture chain and after mangle, so the
+		// capture chain's port 53 skip still prevents double redirection.
+		fmt.Fprintf(&out, "add chain ip %s dns { type nat hook prerouting priority -110; policy accept; }\n", bypassTable)
+		fmt.Fprintf(&out, "add rule ip %s dns %s meta l4proto { tcp, udp } th dport 53 redirect to :%d\n", bypassTable, match, s.DNSPort)
+	}
+	// Forwarding is expressed in an owned chain. Docker's FORWARD policy DROP is
+	// handled separately with an owned DOCKER-USER rule.
+	fmt.Fprintf(&out, "add chain ip %s forward { type filter hook forward priority -10; policy accept; }\n", bypassTable)
+	fmt.Fprintf(&out, "add rule ip %s forward ct state established,related accept\n", bypassTable)
+	fmt.Fprintf(&out, "add rule ip %s forward %s accept\n", bypassTable, match)
+	fmt.Fprintf(&out, "add rule ip %s forward oifname %q ip daddr %s accept\n", bypassTable, s.Interface.Name, network.String())
+	if s.WANInterface != "" {
+		fmt.Fprintf(&out, "add chain ip %s postrouting { type nat hook postrouting priority 100; policy accept; }\n", bypassTable)
+		fmt.Fprintf(&out, "add rule ip %s postrouting oifname %q ip saddr %s masquerade\n", bypassTable, s.WANInterface, network.String())
+	}
+	return out.String()
 }
 func prefixBypassRules(rules string) string {
 	out := ""
@@ -203,6 +244,51 @@ func (h *helper) bypassPreflight(ctx context.Context, body map[string]any) (*byp
 		return nil, fail(400, "透明代理端口无效")
 	}
 	ops := h.bypassOS()
+	wan := ""
+	ipv6Route := false
+	dockerAvailable := false
+	if h.bypassSystem != nil {
+		// Injected system (tests) opts into each probe explicitly.
+		if h.bypassSystem.wan != nil {
+			wan = h.bypassSystem.wan(ctx)
+		}
+		if h.bypassSystem.ipv6Route != nil {
+			ipv6Route = h.bypassSystem.ipv6Route(ctx)
+		}
+		if h.bypassSystem.dockerChain != nil {
+			dockerAvailable = h.bypassSystem.dockerChain(ctx)
+		}
+	} else {
+		wan = detectBypassWAN(ctx, ops)
+		ipv6Route = hasIPv6DefaultRoute(ctx, ops)
+		dockerAvailable = hasDockerUserChain(ctx, ops)
+	}
+	dnsHijack := true
+	if value, ok := body["dnsHijack"].(bool); ok {
+		dnsHijack = value
+	}
+	dnsPort := 0
+	if dnsHijack {
+		if !yamlNestedBoolean(string(raw), "dns", "enable", false) {
+			return nil, fail(409, "接管 DNS 前请先在 DNS 设置中启用 Mihomo DNS")
+		}
+		if !dnsLANReachable(string(raw)) {
+			return nil, fail(409, "DNS 监听地址仅限回环，请改为 0.0.0.0:53 或局域网地址后再接管 DNS")
+		}
+		dnsPort = dnsListenPort(string(raw))
+	}
+	warnings := []string{}
+	if wan == "" {
+		warnings = append(warnings, "未检测到默认路由，已跳过源地址转换")
+	} else if wan == iface.Name {
+		warnings = append(warnings, "默认路由与接入网卡相同，源地址转换可能不生效")
+	}
+	if readRPFilter("all") == "1" || readRPFilter(iface.Name) == "1" {
+		warnings = append(warnings, "系统启用了严格 rp_filter，跨网卡转发可能被丢弃")
+	}
+	if ipv6Route {
+		warnings = append(warnings, "检测到 IPv6 默认路由，IPv6 流量不会经过接管")
+	}
 	tables, err := ops.run(ctx, "", "nft", "-j", "list", "tables")
 	if err != nil {
 		return nil, err
@@ -225,7 +311,7 @@ func (h *helper) bypassPreflight(ctx context.Context, body map[string]any) (*byp
 	if _, err = rand.Read(token); err != nil {
 		return nil, err
 	}
-	plan := &bypassState{Schema: 1, Token: hex.EncodeToString(token), Mode: mode, Interface: *iface, Port: port, PreviousForward: forward, CorePID: proc.PID}
+	plan := &bypassState{Schema: 2, Token: hex.EncodeToString(token), Mode: mode, Interface: *iface, Port: port, PreviousForward: forward, CorePID: proc.PID, WANInterface: wan, DNSHijack: dnsHijack, DNSPort: dnsPort, DockerAvailable: dockerAvailable, Warnings: warnings}
 	if mode == "tproxy" {
 		rules, e := ops.run(ctx, "", "ip", "-4", "rule", "show")
 		if e != nil {
@@ -278,7 +364,7 @@ func (h *helper) configureBypass(ctx context.Context, body map[string]any) (map[
 	if err != nil {
 		return nil, err
 	}
-	preferences := &bypassPreferences{Schema: 1, Mode: s.Mode, Interface: s.Interface, Enabled: true, KeepEnabled: boolField(body, "keepEnabled")}
+	preferences := &bypassPreferences{Schema: 2, Mode: s.Mode, Interface: s.Interface, Enabled: true, KeepEnabled: boolField(body, "keepEnabled"), DNSHijack: s.DNSHijack}
 	if err = h.saveBypassPreferences(preferences); err != nil {
 		recovery, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -332,7 +418,18 @@ func (h *helper) installBypassPlan(ctx context.Context, s *bypassState) (map[str
 	if _, err = ops.run(ctx, bypassRules(s), "nft", "-f", "-"); err != nil {
 		return rollback(err)
 	}
-	return map[string]any{"ok": true, "mode": s.Mode, "interface": s.Interface, "port": s.Port}, nil
+	if s.DockerAvailable {
+		s.DockerRule = true
+		if err = h.saveBypassState(s); err != nil {
+			return rollback(err)
+		}
+		if err = ensureDockerForward(ctx, ops, s); err != nil {
+			s.DockerRule = false
+			_ = h.saveBypassState(s)
+			return rollback(err)
+		}
+	}
+	return map[string]any{"ok": true, "mode": s.Mode, "interface": s.Interface, "port": s.Port, "wan": s.WANInterface, "dnsHijack": s.DNSHijack, "dnsPort": s.DNSPort, "nat": s.WANInterface != "", "dockerRule": s.DockerRule, "warnings": s.Warnings}, nil
 }
 func (h *helper) cleanupBypassLocked(ctx context.Context, pid int) error {
 	s, err := h.readBypassState()
@@ -343,6 +440,15 @@ func (h *helper) cleanupBypassLocked(ctx context.Context, pid int) error {
 		return nil
 	}
 	ops := h.bypassOS()
+	if err = removeDockerForward(ctx, ops, s); err != nil {
+		return err
+	}
+	if s.DockerRule {
+		s.DockerRule = false
+		if err = h.saveBypassState(s); err != nil {
+			return err
+		}
+	}
 	raw, err := ops.run(ctx, "", "nft", "-j", "list", "tables")
 	if err != nil {
 		return err
@@ -425,7 +531,7 @@ func (h *helper) bypassManagedStatus(ctx context.Context, rules ...[]byte) map[s
 	if s == nil {
 		return h.attachBypassPreferences(map[string]any{"active": false})
 	}
-	status := map[string]any{"active": true, "mode": s.Mode, "interface": s.Interface, "port": s.Port, "rulesPresent": nil}
+	status := map[string]any{"active": true, "mode": s.Mode, "interface": s.Interface, "port": s.Port, "wan": s.WANInterface, "dnsHijack": s.DNSHijack, "dnsPort": s.DNSPort, "dockerRule": s.DockerRule, "rulesPresent": nil}
 	if len(rules) > 0 {
 		exists, owner, err := h.bypassOwner(ctx, rules[0])
 		switch {

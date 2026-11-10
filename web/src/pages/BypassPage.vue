@@ -14,6 +14,7 @@ import HelpPopover from '@/components/HelpPopover.vue'
 
 const host = ref<MonitorHost | null>(null)
 const runtimeTun = ref<boolean | null>(null)
+const lanProbe = ref<{ gateway?: string; localDHCP?: boolean } | null>(null)
 const connections = ref<ObservedConnection[]>([])
 const hostError = ref(''), runtimeError = ref(''), connectionError = ref('')
 const refreshing = ref(false), updatedAt = ref(''), selected = ref('')
@@ -57,6 +58,11 @@ const config = computed(() => host.value?.config)
 const configUnavailable = computed(() => !config.value || !!host.value?.configError)
 const modes = computed(() => bypassModeChecks(configUnavailable.value ? null : config.value, runtimeTun.value, observedTypes.value, host.value?.managed))
 const dns = computed(() => dnsDiagnostic(config.value, runtimeTun.value, !!host.value?.configError))
+const lanDNS = computed(() => {
+  if (config.value?.dnsEnabled !== true) return false
+  const listen = (config.value?.dnsListen || '').trim()
+  return Boolean(listen) && !/^(127\.|\[::1\]|localhost)/.test(listen)
+})
 function boolLabel(value: boolean | null | undefined): string { return value === true ? '已开启' : value === false ? '未开启' : '待验证' }
 async function load() {
   if (refreshing.value || disposed) return
@@ -69,11 +75,12 @@ async function load() {
     api<MonitorHost>('/api/network/bypass', { signal: timeout.signal }),
     api<{ configs?: { tun?: { enable?: boolean } } }>('/api/status', { signal: timeout.signal }),
     api<{ connections?: ObservedConnection[] }>('/api/connections', { signal: timeout.signal }),
+    api<{ gateway?: string; localDHCP?: boolean }>('/api/network/bypass/lan-probe', { signal: timeout.signal }),
   ])
   clearTimeout(deadline)
   controller.signal.removeEventListener('abort', abort)
   if (disposed) return
-  const [h, r, c] = results
+  const [h, r, c, p] = results
   if (h.status === 'fulfilled') {
     host.value = h.value; hostError.value = ''
     if (!h.value.interfaces.filter(i => !isContainerInterface(i.name)).some(i => `${i.name}/${i.address}` === selected.value)) {
@@ -84,6 +91,7 @@ async function load() {
   else { runtimeTun.value = null; runtimeError.value = errorMessage(r.reason) }
   if (c.status === 'fulfilled') { connections.value = c.value.connections || []; connectionError.value = '' }
   else { connections.value = []; connectionError.value = errorMessage(c.reason) }
+  lanProbe.value = p.status === 'fulfilled' ? p.value : null
   devices.value = bypassInventory.update(connections.value, host.value?.neighbors || [], host.value?.interfaces || [], Date.now(), !connectionError.value && !hostError.value)
   updatedAt.value = new Date().toLocaleTimeString()
   refreshing.value = false
@@ -139,6 +147,8 @@ defineExpose({ refreshPage: load })
       <dl class="check-list">
         <div><dt>{{ t('DNS 配置') }}</dt><dd>{{ t(dns.status) }}<small>{{ t('独立监听') }}：{{ t(dns.listen) }}</small><small :class="{ 'warn-text': dns.conflict }">{{ t(dns.note) }}</small><small>{{ t('本页未执行 DNS 解析或端口连通性测试。') }}</small></dd></div>
         <div><dt>{{ t('系统 IPv4 转发') }}</dt><dd>{{ t(boolLabel(host?.forwarding)) }}<small>{{ t('此项单独不能判定设备流量是否已被接管。') }}</small></dd></div>
+        <div v-if="host?.managed?.active"><dt>{{ t('接管 DNS') }}</dt><dd>{{ host.managed.dnsHijack ? `${t('已启用')} · :${host.managed.dnsPort}` : t('未启用') }}<small>{{ t('复用 DNS 设置里的监听地址，停用时不会修改 DNS 配置。') }}</small></dd></div>
+        <div v-if="host?.managed?.active"><dt>{{ t('转发与源 NAT') }}</dt><dd>{{ host.managed.wan ? `${t('已配置')} · ${host.managed.wan}` : t('未检测到默认路由，未启用源 NAT') }}<small v-if="host.managed.dockerRule">{{ t('已添加 DOCKER-USER 放行规则。') }}</small></dd></div>
       </dl>
       <BypassFirewallRules :firewall="host?.firewall" />
       <details v-if="modes.other.length" class="other-modes">
@@ -157,10 +167,20 @@ defineExpose({ refreshPage: load })
       <div v-show="detailTab === 'guide'" id="bypass-panel-guide" class="monitor-guide" role="tabpanel" aria-labelledby="bypass-tab-guide" tabindex="0">
       <div v-if="lanInterfaces.length" class="guide-interface"><span>{{ t('接入网卡') }}</span><AppSelect v-model="selected" :label="t('接入网卡')" :options="lanInterfaces.map(i => ({ value: `${i.name}/${i.address}`, label: `${i.name} · ${i.address}` }))" /></div>
       <dl class="guide-address">
-        <div><dt>{{ t('默认网关') }}</dt><dd>{{ selectedInterface?.address || '—' }}</dd></div>
+        <div><dt>{{ t('NAS 网关地址') }}</dt><dd>{{ selectedInterface?.address || '—' }}</dd></div>
         <div><dt>{{ t('局域网网段') }}</dt><dd>{{ selectedInterface?.cidr || '—' }}</dd></div>
-        <div><dt>DNS <HelpPopover label="DNS"><span>{{ t('设备默认网关可填写所选 NAS IPv4；DNS 仅在 NAS 已提供可达的 DNS 服务时指向该地址。') }}</span></HelpPopover></dt><dd>{{ t('确认 NAS DNS 可用后再填写') }}</dd></div>
+        <div><dt>DNS</dt><dd>{{ config?.dnsListen || '—' }}</dd></div>
+        <div><dt>{{ t('主路由') }}</dt><dd>{{ lanProbe?.gateway || '—' }}</dd></div>
       </dl>
+      <ol class="guide-steps">
+        <li>{{ t('在主路由 DHCP 中把网关和 DNS 改为上面的 NAS 地址；也可以在每台设备上手动设置。') }}</li>
+        <li>{{ t('设备重新连接 Wi-Fi 或有线网络，使新的网关和 DNS 生效。') }}</li>
+        <li>{{ t('在设备上访问网站，然后在本页设备列表或设备详情中确认出现 TProxy/Redir 连接。') }}</li>
+      </ol>
+      <p v-if="lanProbe?.localDHCP" class="warn-text">{{ t('检测到本机正在运行 DHCP 服务，请直接在 fnOS 的 DHCP 设置中修改网关与 DNS。') }}</p>
+      <p v-if="config && config.dnsEnabled !== true" class="warn-text">{{ t('Mihomo DNS 未启用，设备把 DNS 指向 NAS 将无法解析。请先在 DNS 与解析中启用。') }}</p>
+      <p v-else-if="config && !lanDNS" class="warn-text">{{ t('DNS 只监听回环地址，局域网设备无法使用；请改为 0.0.0.0:53。') }}</p>
+      <p class="muted">{{ t('Redir 只接管 TCP；需要接管 UDP/QUIC 请改用 TProxy。IPv6 不会被接管。') }}</p>
       <div class="guide-verify"><span>{{ t('访问网站后，在设备详情中查看实际入站方式。') }}</span><HelpPopover :label="t('设备接入')"><span>{{ t('在设备上访问网站，然后观察此页是否出现该设备源 IP 的 TUN、Redir 或 TProxy 连接、命中规则和出口链。') }}</span><span>{{ t('IPv6、同网段直连和被排除的目标可能绕过接管规则；本页不证明这些流量已接管。') }}</span></HelpPopover></div>
       </div>
     </section>
@@ -222,6 +242,7 @@ small { display:block;color:var(--muted);margin-top:5px; }
 .guide-address { display:flex;gap:16px 36px;flex-wrap:wrap;margin:12px 0; }
 .guide-address dt { display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px; }
 .guide-verify { display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;margin-top:16px; }
+.guide-steps { margin:8px 0 12px;padding-left:20px;color:var(--muted);font-size:12px;line-height:1.7; }
 .guide-address dd { margin-top:6px; }
 p { line-height:1.65; }
 @media(max-width:600px) { .check-list > div,.guide-interface { grid-template-columns:1fr;gap:6px; } }

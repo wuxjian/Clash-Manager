@@ -1444,6 +1444,17 @@ func (h *helper) updateNetwork(ctx context.Context, input map[string]any) (map[s
 	raw := active["content"].(string)
 	previousTunEnabled := yamlNestedBoolean(raw, "tun", "enable", false)
 	previousController, _, _ := parseController(raw)
+	dnsYAMLMode := stringField(input, "dnsEditorMode") == "yaml"
+	settings := map[string]any{}
+	if dnsYAMLMode {
+		block, parsed, err := normalizeDNSYAML(stringField(input, "dnsYAML"))
+		if err != nil {
+			return nil, err
+		}
+		raw = replaceTopLevel(raw, "dns", block)
+		settings["dns"] = parsed
+		settings["dnsEditorMode"] = "yaml"
+	}
 	// Existing keys stay in place; missing keys are appended in this fixed order.
 	mapping := []struct{ api, key string }{
 		{"controller", "external-controller"}, {"mixed", "mixed-port"},
@@ -1452,11 +1463,13 @@ func (h *helper) updateNetwork(ctx context.Context, input map[string]any) (map[s
 		{"bindAddress", "bind-address"}, {"core", ""}, {"dns", "dns"}, {"tun", "tun"},
 		{"proxyAuthentication", ""},
 	}
-	settings := map[string]any{}
 	for _, field := range mapping {
 		api, key := field.api, field.key
 		value, ok := input[api]
 		if !ok {
+			continue
+		}
+		if api == "dns" && dnsYAMLMode {
 			continue
 		}
 		settings[api] = value
@@ -1598,6 +1611,7 @@ func (h *helper) updateNetwork(ctx context.Context, input map[string]any) (map[s
 	settings["bindAddress"] = proxyBindAddressFromConfig(raw)
 	_, changesTun := input["tun"]
 	_, changesDNS := input["dns"]
+	changesDNS = changesDNS || dnsYAMLMode
 	if (changesTun || changesDNS) && yamlNestedBoolean(raw, "tun", "enable", false) {
 		if _, _, err := guardTunDNSHijack(raw, true); err != nil {
 			return nil, err
@@ -1692,6 +1706,8 @@ func (h *helper) readNetworkStatus(ctx context.Context, includeListeners bool) (
 	}
 	settings := map[string]any{"controller": map[string]any{"enabled": true, "port": controllerPort}, "mixed": port("mixed-port", mixed), "socks": port("socks-port", 7898), "http": port("port", 7899), "redir": port("redir-port", 7895), "tproxy": port("tproxy-port", 7896), "allowLan": yamlBoolean(raw, "allow-lan", false), "bindAddress": proxyBindAddressFromConfig(raw), "core": map[string]any{"ipv6": yamlBoolean(raw, "ipv6", true), "unifiedDelay": yamlBoolean(raw, "unified-delay", false)}, "tun": map[string]any{"enabled": nestedBoolean("tun", "enable", false), "stack": yamlNestedString(raw, "tun", "stack", ""), "congestionController": yamlNestedString(raw, "tun", "congestion-controller", ""), "mtu": yamlNestedInteger(raw, "tun", "mtu", 1500), "routeExcludeAddress": yamlNestedStringList(raw, "tun", "route-exclude-address"), "autoRoute": nestedBoolean("tun", "auto-route", true), "autoRedirect": nestedBoolean("tun", "auto-redirect", true), "autoDetectInterface": nestedBoolean("tun", "auto-detect-interface", true), "dnsHijack": len(hijack) > 0, "strictRoute": nestedBoolean("tun", "strict-route", false)}}
 	settings["dnsEnabled"] = nestedBoolean("dns", "enable", false)
+	settings["dnsListen"] = yamlNestedString(raw, "dns", "listen", "")
+	settings["dnsLanReachable"] = dnsLANReachable(raw)
 	requirements, _ := configyaml.TunDNSRequirements([]byte(raw))
 	auth, err := configyaml.ProxyAuthenticationFromDocument(document)
 	if err != nil {

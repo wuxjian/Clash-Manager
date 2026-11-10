@@ -33,6 +33,31 @@ func TestBypassRuleScope(t *testing.T) {
 		}
 	}
 }
+func TestBypassRulesAddsDNSForwardAndNAT(t *testing.T) {
+	s := testBypassPlan("tproxy")
+	s.WANInterface = "eth1"
+	s.DNSHijack = true
+	s.DNSPort = 53
+	rules := bypassRules(s)
+	for _, want := range []string{
+		`add chain ip clash_manager_bypass dns { type nat hook prerouting priority -110; policy accept; }`,
+		`th dport 53 redirect to :53`,
+		`add chain ip clash_manager_bypass forward { type filter hook forward priority -10; policy accept; }`,
+		`ct state established,related accept`,
+		`oifname "eth1" ip saddr 192.168.1.0/24 masquerade`,
+	} {
+		if !strings.Contains(rules, want) {
+			t.Fatalf("missing %s: %s", want, rules)
+		}
+	}
+	s.DNSHijack = false
+	s.WANInterface = ""
+	rules = bypassRules(s)
+	if strings.Contains(rules, "postrouting") || strings.Contains(rules, "th dport 53 redirect") {
+		t.Fatalf("optional chains emitted without configuration: %s", rules)
+	}
+}
+
 func TestBypassTransactionsRollback(t *testing.T) {
 	for _, failure := range []string{"route", "rule", "forward", "table", ""} {
 		t.Run(failure, func(t *testing.T) {

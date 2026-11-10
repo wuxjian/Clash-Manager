@@ -27,6 +27,7 @@ import { useAppUpdateNotice } from '@/composables/useAppUpdateNotice'
 import { useAppInstall } from '@/composables/useAppInstall'
 import { api, APP_PREFIX, errorMessage, jsonRequest } from '@/services/api'
 import { coreUpdateFailure, type CoreUpdateProgress } from '@/services/core-update'
+import { BYPASS_DNS_PRESET, validateDNSYAML } from '@/services/dns-yaml'
 import { formatBytes, formatTime } from '@/services/format'
 import { openStatusStream } from '@/services/status-stream'
 import { notify } from '@/services/toast'
@@ -38,6 +39,7 @@ type Section = 'core' | 'network' | 'dns' | 'tun' | 'advanced' | 'behavior' | 'b
 type NetworkForm = {
   controller: PortSetting; mixed: PortSetting; socks: PortSetting; http: PortSetting; redir: PortSetting; tproxy: PortSetting
   allowLan: boolean; bindAddress: string; core: { ipv6: boolean; unifiedDelay: boolean }; tun: Required<TunSetting>; dnsOverrideEnabled: boolean; dnsEnabled: boolean; dns: Required<DnsSetting>
+  dnsEditorMode: 'form' | 'yaml'; dnsYAML: string; dnsListen: string; dnsLanReachable: boolean
 }
 type ProxyEnvForm = { enabled: boolean; followMixedPort: boolean; port: number; noProxy: string; targets: { environment: boolean; profile: boolean; bashrc: boolean } }
 type TunOperationStatus = { active?: boolean; enabled?: boolean; stage?: string; message?: string }
@@ -49,6 +51,7 @@ const defaultDns: Required<DnsSetting> = {
 const defaultNetwork = (): NetworkForm => ({
   controller: { enabled: true, port: 9090 }, mixed: { enabled: true, port: 7890 }, socks: { enabled: false, port: 7898 }, http: { enabled: false, port: 7899 }, redir: { enabled: false, port: 7895 }, tproxy: { enabled: false, port: 7896 }, allowLan: false, bindAddress: '*',
   core: { ipv6: true, unifiedDelay: false }, tun: { enabled: false, stack: '', congestionController: '', mtu: 1500, routeExcludeAddress: [], autoRoute: true, autoRedirect: true, autoDetectInterface: true, dnsHijack: false, strictRoute: false }, dnsOverrideEnabled: false, dnsEnabled: false, dns: structuredClone(defaultDns),
+  dnsEditorMode: 'form', dnsYAML: '', dnsListen: '', dnsLanReachable: false,
 })
 
 const requestedSectionValue = new URLSearchParams(location.hash.split('?')[1] || '').get('section')
@@ -178,6 +181,20 @@ const categories = computed(() => allCategories.filter(item => (item.key !== 'ad
   return item
 }))
 const dnsStatus = computed(() => dnsState.value === 'idle' ? (network.dnsOverrideEnabled ? '已启用 DNS 覆写' : 'DNS 覆写已关闭') : dnsMessage.value)
+const dnsListenValue = computed(() => {
+  if (network.dnsEditorMode === 'yaml') {
+    const match = network.dnsYAML.match(/^\s*listen:\s*["']?([^"'\s#]+)/m)
+    return match?.[1] || ''
+  }
+  return network.dns.listen || ''
+})
+const dnsLanWarning = computed(() => {
+  if (!network.dnsOverrideEnabled) return ''
+  const listen = (dnsListenValue.value || '').trim()
+  if (!listen) return ''
+  const host = listen.startsWith('[') ? listen.slice(0, listen.indexOf(']') + 1) : (listen.split(':')[0] || '')
+  return ['', '127.0.0.1', 'localhost', '::1', '[::1]'].includes(host) ? '当前 DNS 只监听回环地址，局域网设备无法使用；旁路由接管 DNS 前请改为 0.0.0.0:53 或局域网地址。' : ''
+})
 const proxyAvailable = computed(() => system.value.available !== false && system.value.privileged !== false && Boolean(environment.value.management))
 const latestAppVersion = computed(() => String(appUpdate.value.latest?.tag || '--').replace(/^v/, ''))
 const proxyBypassItems = computed(() => [...new Set(proxyForm.noProxy.split(',').map(item => item.trim()).filter(Boolean))])
@@ -380,10 +397,27 @@ async function toggleTunSetting() {
   }
 }
 function dnsPayload() {
+  if (network.dnsEditorMode === 'yaml') {
+    const problem = validateDNSYAML(network.dnsYAML)
+    if (problem) throw new Error(problem)
+    return { dnsOverrideEnabled: network.dnsOverrideEnabled, dnsEditorMode: 'yaml', dnsYAML: network.dnsYAML }
+  }
   network.dns.defaultNameserver = lines(dnsText.defaultNameserver); network.dns.nameserver = lines(dnsText.nameserver); network.dns.fallback = lines(dnsText.fallback); network.dns.proxyServerNameserver = lines(dnsText.proxyServerNameserver); network.dns.directNameserver = lines(dnsText.directNameserver); network.dns.fakeIpFilter = lines(dnsText.fakeIpFilter); network.dns.nameserverPolicy = mappings(dnsText.nameserverPolicy, 'dns') as DnsMapping[]; network.dns.fallbackIpCidr = lines(dnsText.fallbackIpCidr); network.dns.fallbackDomain = lines(dnsText.fallbackDomain); network.dns.hosts = mappings(dnsText.hosts, 'hosts') as HostMapping[]; network.dns.fallbackGeoipCode = network.dns.fallbackGeoipCode.trim().toUpperCase()
-  return { dnsOverrideEnabled: network.dnsOverrideEnabled, dns: network.dns }
+  return { dnsOverrideEnabled: network.dnsOverrideEnabled, dnsEditorMode: 'form', dns: network.dns }
 }
 function saveDns(delay = 1000) { try { dnsSave.queue(dnsPayload(), delay) } catch (cause) { notify(errorMessage(cause), true) } }
+function switchDnsMode(mode: 'form' | 'yaml') {
+  if (network.dnsEditorMode === mode) return
+  network.dnsEditorMode = mode
+  if (mode === 'yaml' && !network.dnsYAML.trim()) network.dnsYAML = BYPASS_DNS_PRESET
+  saveDns(0)
+}
+function loadDnsPreset() {
+  network.dnsEditorMode = 'yaml'
+  network.dnsYAML = BYPASS_DNS_PRESET
+  saveDns(0)
+  notify('已载入旁路由 DNS 预设')
+}
 function resetDns() { Object.assign(network.dns, structuredClone(defaultDns)); syncDnsText(); saveDns(0); notify('已恢复默认值，并自动保存') }
 const healthcheckPresets = [
   { id: 'cloudflare', label: 'Cloudflare（HTTP）', url: 'http://cp.cloudflare.com/generate_204' },
@@ -446,7 +480,7 @@ function applyNetwork(value: NetworkSetting, fallbackPort: number) {
   const defaults = defaultNetwork()
   Object.assign(network.controller, defaults.controller, value.controller || {})
   for (const key of ['mixed', 'socks', 'http', 'redir', 'tproxy'] as const) Object.assign(network[key], defaults[key], value[key] || {})
-  network.mixed.port ||= fallbackPort; network.allowLan = Boolean(value.allowLan); network.bindAddress = value.bindAddress || "*"; Object.assign(network.core, defaults.core, value.core || {}); Object.assign(network.tun, defaults.tun, value.tun || {}); tunRouteExcludeText.value = list(network.tun.routeExcludeAddress); network.dnsEnabled = value.dnsEnabled === true; network.dnsOverrideEnabled = value.dnsOverrideEnabled === true; Object.assign(network.dns, structuredClone(defaultDns), value.dns || {}); syncDnsText()
+  network.mixed.port ||= fallbackPort; network.allowLan = Boolean(value.allowLan); network.bindAddress = value.bindAddress || "*"; Object.assign(network.core, defaults.core, value.core || {}); Object.assign(network.tun, defaults.tun, value.tun || {}); tunRouteExcludeText.value = list(network.tun.routeExcludeAddress); network.dnsEnabled = value.dnsEnabled === true; network.dnsOverrideEnabled = value.dnsOverrideEnabled === true; Object.assign(network.dns, structuredClone(defaultDns), value.dns || {}); network.dnsEditorMode = value.dnsEditorMode === 'yaml' ? 'yaml' : 'form'; network.dnsYAML = typeof value.dnsYAML === 'string' ? value.dnsYAML : ''; network.dnsListen = typeof value.dnsListen === 'string' ? value.dnsListen : ''; network.dnsLanReachable = value.dnsLanReachable === true; syncDnsText()
 }
 async function readSettings<T>(path: string, signal: AbortSignal): Promise<T> {
   const value = await api<T>(path, { signal })
@@ -778,10 +812,20 @@ onBeforeUnmount(() => window.removeEventListener('focus', refreshLogDisplayOnFoc
 
           <div v-else-if="category.key === 'dns'" class="settings-accordion-panel dns-settings-panel" :class="{ 'dns-on': network.dnsOverrideEnabled }">
             <div class="dns-overview"><div><strong>{{ t("DNS 覆写") }}</strong><span>{{ t("默认关闭；关闭时只保存 DNS 模板，不写入当前启动配置") }}</span></div><label class="switch large"><input v-model="network.dnsOverrideEnabled" type="checkbox" @change="saveDns(120)"><span /></label></div>
-            <div class="dns-tabs" role="tablist" :aria-label="t('DNS 设置')">
+            <div class="dns-editor-mode">
+              <button type="button" :class="{ active: network.dnsEditorMode === 'form' }" @click="switchDnsMode('form')">{{ t("表单") }}</button>
+              <button type="button" :class="{ active: network.dnsEditorMode === 'yaml' }" @click="switchDnsMode('yaml')">{{ t("高级 YAML") }}</button>
+              <button type="button" class="ghost small" @click="loadDnsPreset">{{ t("载入旁路由 DNS 预设") }}</button>
+            </div>
+            <div v-if="network.dnsEditorMode === 'yaml'" class="field dns-yaml-editor">
+              <label for="dns-yaml">{{ t("DNS YAML") }}</label>
+              <textarea id="dns-yaml" v-model="network.dnsYAML" class="dns-list-input mono dns-yaml-input" spellcheck="false" placeholder="dns:&#10;  enable: true&#10;  listen: 0.0.0.0:53" @change="saveDns(0)" />
+              <div v-if="dnsLanWarning" class="hint dns-warning">{{ t(dnsLanWarning) }}</div>
+            </div>
+            <div class="dns-tabs" role="tablist" :aria-label="t('DNS 设置')" v-show="network.dnsEditorMode !== 'yaml'">
               <button v-for="(tab, index) in dnsTabs" :id="`dns-tab-${tab.key}`" :key="tab.key" type="button" role="tab" :aria-selected="dnsTab === tab.key" :aria-controls="`dns-panel-${tab.key}`" :tabindex="dnsTab === tab.key ? 0 : -1" @click="dnsTab = tab.key" @keydown="navigateDnsTab($event, index)">{{ t(tab.label) }}</button>
             </div>
-            <div class="dns-tab-panels">
+            <div class="dns-tab-panels" v-show="network.dnsEditorMode !== 'yaml'">
               <div v-show="dnsTab === 'basic'" id="dns-panel-basic" class="dns-tab-panel" role="tabpanel" aria-labelledby="dns-tab-basic">
                 <div class="dns-field-grid"><div class="field"><label for="dns-listen">{{ t("DNS 监听地址") }}</label><input id="dns-listen" v-model="network.dns.listen" class="mono" @change="saveDns(80)"></div><div class="field"><label data-setting="dns-enhancedMode" class="field-control-label">{{ t("增强模式") }}<AppSelect :aria-label="t('增强模式')" v-model="network.dns.enhancedMode" @change="saveDns(180)" :options="[{ value: 'fake-ip', label: 'Fake IP' }, { value: 'redir-host', label: 'Redir Host' }]" /></label></div><div class="field"><label for="dns-fake-ip-range">{{ t("Fake IP IPv4 范围") }}</label><input id="dns-fake-ip-range" v-model="network.dns.fakeIpRange" class="mono" @change="saveDns(80)"></div><div class="field"><label for="dns-fake-ip-range6">{{ t("Fake IP IPv6 范围") }}</label><input id="dns-fake-ip-range6" v-model="network.dns.fakeIpRange6" class="mono" @change="saveDns(80)"></div><div class="field"><label data-setting="dns-fakeIpFilterMode" class="field-control-label">{{ t("Fake IP 过滤模式") }}<AppSelect :aria-label="t('Fake IP 过滤模式')" v-model="network.dns.fakeIpFilterMode" @change="saveDns(180)" :options="[{ value: 'blacklist', label: (t('黑名单')) }, { value: 'whitelist', label: (t('白名单')) }, { value: 'rule', label: (t('规则模式')) }]" /></label></div></div>
                 <div class="dns-toggle-grid"><SettingToggle data-setting="setting-network-dns-enable" v-model="network.dns.enable" :title="t('启用 DNS')" :description="t('写入覆写配置时启用 Mihomo DNS')" @change="saveDns(120)" /><SettingToggle data-setting="setting-network-dns-ipv6" v-model="network.dns.ipv6" :title="t('IPv6 DNS 解析')" :description="t('是否返回 AAAA 记录；与全局 IPv6 开关不同')" @change="saveDns(180)" /><SettingToggle data-setting="setting-network-dns-preferH3" v-model="network.dns.preferH3" :title="t('优先使用 HTTP/3')" :description="t('DoH 优先尝试 HTTP/3')" @change="saveDns(180)" /><SettingToggle data-setting="setting-network-dns-respectRules" v-model="network.dns.respectRules" :title="t('DNS 遵循路由规则')" :description="t('需要配置代理节点 DNS，避免解析循环')" @change="saveDns(180)" /><SettingToggle data-setting="setting-network-dns-useHosts" v-model="network.dns.useHosts" :title="t('使用配置 Hosts')" :description="t('使用 Mihomo 配置中的 hosts 映射')" @change="saveDns(180)" /><SettingToggle data-setting="setting-network-dns-useSystemHosts" v-model="network.dns.useSystemHosts" :title="t('使用系统 Hosts')" :description="t(runtime.platform === 'linux' ? '读取 Linux 主机的 hosts 文件' : runtime.platform === 'docker' ? '读取容器内 hosts 文件' : '读取 fnOS 的系统 hosts 文件')" @change="saveDns(180)" /><SettingToggle data-setting="setting-network-dns-directNameserverFollowPolicy" v-model="network.dns.directNameserverFollowPolicy" :title="t('直连 DNS 遵循策略')" :description="t('直连域名解析遵循 nameserver-policy')" @change="saveDns(180)" /></div>
@@ -1033,6 +1077,11 @@ onBeforeUnmount(() => window.removeEventListener('focus', refreshLogDisplayOnFoc
 .settings-compact :deep(.auth-setting > button) { min-height: 30px; padding: 5px 10px; font-size: 12px; }
 /* The former accordion shell must not clip the inset DNS panel corners. */
 .settings-compact .dns-settings-panel { overflow: visible; border-radius: 0; }
+.dns-editor-mode { display: flex; align-items: center; gap: 8px; margin: 10px 0 12px; flex-wrap: wrap; }
+.dns-editor-mode button.active { border-color: var(--accent); color: var(--accent); }
+.dns-yaml-editor { margin-bottom: 12px; }
+.dns-yaml-input { width: 100%; min-height: 360px; resize: vertical; }
+.dns-warning { color: var(--warning, #b26a00); }
 .settings-compact .dns-tab-panel { padding: 10px; border-radius: 9px; }
 .settings-compact .section-head { margin-bottom: 10px; }
 .settings-compact .tun-main-grid :deep(input),

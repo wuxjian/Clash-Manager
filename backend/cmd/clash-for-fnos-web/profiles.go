@@ -742,6 +742,25 @@ func (g *gateway) updateProfileLocked(ctx context.Context, state *profileState, 
 	return content, changed, err
 }
 
+func (g *gateway) quicPolicy() map[string]any {
+	policy := configyaml.QUICPolicy{Domestic: "direct", Foreign: "reject"}
+	if document, err := g.settings.ReadDocument(); err == nil {
+		if item, ok := document["quicPolicy"].(map[string]any); ok {
+			if value, ok := item["domestic"].(string); ok {
+				policy.Domestic = value
+			}
+			if value, ok := item["foreign"].(string); ok {
+				policy.Foreign = value
+			}
+		}
+	}
+	normalized, err := configyaml.NormalizeQUICPolicy(policy)
+	if err != nil {
+		normalized = configyaml.QUICPolicy{Domestic: "direct", Foreign: "reject"}
+	}
+	return map[string]any{"domestic": normalized.Domestic, "foreign": normalized.Foreign}
+}
+
 func (g *gateway) activateProfileLocked(ctx context.Context, state *profileState, item *profile, syncStartup bool, stage func(string, string)) (map[string]any, error) {
 	if stage != nil {
 		stage("reading", "读取配置…")
@@ -767,7 +786,7 @@ func (g *gateway) activateProfileLocked(ctx context.Context, state *profileState
 		return nil, err
 	}
 	var composed map[string]any
-	if err = g.helperJSON(ctx, http.MethodPost, "/config/compose", map[string]any{"content": string(content), "dnsOverrideEnabled": enabled, "dns": dns, "listenerScope": "profile:" + item.ID}, &composed, 10*time.Second); err != nil {
+	if err = g.helperJSON(ctx, http.MethodPost, "/config/compose", map[string]any{"content": string(content), "dnsOverrideEnabled": enabled, "dns": dns, "quicPolicy": g.quicPolicy(), "listenerScope": "profile:" + item.ID}, &composed, 10*time.Second); err != nil {
 		return nil, err
 	}
 	effective, ok := composed["content"].(string)

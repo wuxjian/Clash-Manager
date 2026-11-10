@@ -11,9 +11,10 @@ import SequenceFormDialog from '@/components/SequenceFormDialog.vue'
 const props = defineProps<{ host: MonitorHost | null; runtimeTun: boolean | null }>()
 const tunEnabled = computed(() => props.runtimeTun === true || props.host?.config?.tun === true)
 const emit = defineEmits<{ changed: [] }>()
-const open = ref(false), mode = ref<'redir' | 'tproxy'>('tproxy'), selected = ref(''), keepEnabled = ref(false)
+const open = ref(false), mode = ref<'redir' | 'tproxy'>('tproxy'), selected = ref(''), keepEnabled = ref(false), dnsHijack = ref(true)
 const busy = ref(false), checking = ref(false), error = ref(''), message = ref('')
-const plan = ref<{ mode: string; interface: LanInterface; port: number } | null>(null)
+const plan = ref<{ mode: string; interface: LanInterface; port: number; dnsHijack?: boolean; dnsPort?: number; wan?: string; dockerRule?: boolean; warnings?: string[] } | null>(null)
+const presetDns = computed(() => props.host?.config?.dnsEnabled === true && Boolean(props.host.config.dnsListen) && !/^(127\.|\[::1\]|localhost)/.test(props.host.config.dnsListen))
 const setupNotice = computed(() => error.value && !open.value ? error.value : props.host?.managed?.error || (props.host?.managed?.active && props.host.managed.rulesPresent !== true ? '暂未核验接管规则，可刷新后重试' : ''))
 const interfaces = computed(() => (props.host?.interfaces || []).filter(item => !isContainerInterface(item.name)))
 const iface = computed(() => interfaces.value.find(item => `${item.name}/${item.address}` === selected.value))
@@ -27,7 +28,7 @@ watch([interfaces, () => props.host?.managed], () => {
 }, { immediate: true })
 let previewTimer: ReturnType<typeof setTimeout> | undefined, previewRequest: AbortController | undefined
 function cancelPreview() { clearTimeout(previewTimer); previewRequest?.abort(); previewRequest = undefined; checking.value = false }
-watch([open, mode, selected, () => iface.value?.cidr], () => {
+watch([open, mode, selected, dnsHijack, () => iface.value?.cidr], () => {
   cancelPreview(); plan.value = null; error.value = ''
   if (!open.value) { if (!busy.value) keepEnabled.value = props.host?.managed?.keepEnabled === true; return }
   if (tunEnabled.value) return
@@ -36,7 +37,7 @@ watch([open, mode, selected, () => iface.value?.cidr], () => {
   previewTimer = setTimeout(preview, 150)
 })
 watch(tunEnabled, enabled => { if (enabled) { cancelPreview(); open.value = false; plan.value = null } })
-function payload() { return { mode: mode.value, interface: iface.value?.name, address: iface.value?.address, keepEnabled: keepEnabled.value } }
+function payload() { return { mode: mode.value, interface: iface.value?.name, address: iface.value?.address, keepEnabled: keepEnabled.value, dnsHijack: dnsHijack.value } }
 async function preview() {
   if (!open.value || tunEnabled.value || busy.value || !iface.value) return
   cancelPreview(); const active = new AbortController(); previewRequest = active
@@ -74,7 +75,7 @@ onBeforeUnmount(cancelPreview)
 </script>
 <template>
   <section class="card bypass-setup">
-    <div class="bypass-setup-row"><div><strong>{{ t('一键配置') }}</strong><p>{{ props.host?.managed?.active ? `${props.host.managed.mode === 'tproxy' ? 'TProxy' : 'Redir'} · ${props.host.managed.interface?.name} · ${props.host.managed.interface?.cidr}` : t('为所选局域网网卡配置 IPv4 透明代理接管') }}</p></div><button v-if="props.host?.managed?.active" class="ghost" :disabled="busy" @click="stop">{{ t('停用并恢复') }}</button><button v-else class="ghost" :disabled="busy || tunEnabled || !props.host?.setupSupported" :aria-describedby="tunEnabled ? 'bypass-tun-notice' : undefined" @click="open = true; error = ''; plan = null">{{ t('配置接管规则') }}</button></div>
+    <div class="bypass-setup-row"><div><strong>{{ t('一键配置') }}</strong><p>{{ props.host?.managed?.active ? `${props.host.managed.mode === 'tproxy' ? 'TProxy' : 'Redir'} · ${props.host.managed.interface?.name} · ${props.host.managed.interface?.cidr}${props.host.managed.wan ? ' · NAT ' + props.host.managed.wan : ''}${props.host.managed.dnsHijack ? ' · DNS 接管' : ''}` : t('为所选局域网网卡配置 IPv4 透明代理接管') }}</p></div><button v-if="props.host?.managed?.active" class="ghost" :disabled="busy" @click="stop">{{ t('停用并恢复') }}</button><button v-else class="ghost" :disabled="busy || tunEnabled || !props.host?.setupSupported" :aria-describedby="tunEnabled ? 'bypass-tun-notice' : undefined" @click="open = true; error = ''; plan = null">{{ t('配置接管规则') }}</button></div>
     <SettingToggle v-if="props.host?.managed?.active || props.host?.managed?.selection" v-model="keepEnabled" :title="t('保持启用')" :description="t('内核重启或配置重新应用后自动核验并恢复；关闭此项不影响当前规则。')" :disabled="busy" @change="saveKeep" />
     <p v-if="tunEnabled" id="bypass-tun-notice" role="status">{{ t('TUN 已开启，无需重复配置接管规则') }}</p>
     <p v-if="props.host && !props.host.setupSupported" class="muted">{{ t('一键配置需要 Linux、nftables、iproute2 和网络管理权限。') }}</p>
@@ -85,13 +86,15 @@ onBeforeUnmount(cancelPreview)
         <label>{{ t('接管模式') }}<AppSelect v-model="mode" :label="t('接管模式')" :disabled="busy" :options="[{ value: 'tproxy', label: 'TProxy · TCP / UDP' }, { value: 'redir', label: 'Redir · TCP' }]" /></label>
         <label>{{ t('接入网卡') }}<AppSelect v-model="selected" :label="t('接入网卡')" :disabled="busy" :options="interfaces.map(item => ({ value: `${item.name}/${item.address}`, label: `${item.name} · ${item.address} · ${item.cidr}` }))" /></label>
         <SettingToggle v-model="keepEnabled" :title="t('保持启用')" :description="t('内核重启或配置重新应用后自动核验并恢复接管规则。')" :disabled="busy" />
+        <SettingToggle v-model="dnsHijack" :title="t('接管 DNS')" :description="t('把客户端 53 端口重定向到 Mihomo DNS；复用 DNS 设置里的监听地址，不会自动修改。')" :disabled="busy" />
+        <p v-if="dnsHijack && !presetDns" class="warn-text">{{ t('DNS 设置未启用或只监听回环地址，开启接管 DNS 前请先到 DNS 与解析中改为 0.0.0.0:53。') }}</p>
         <p>{{ t('仅支持运行中的托管内核；请先关闭 TUN，避免重复接管。') }}</p>
-        <p>{{ t('仅接管所选网卡的 IPv4 公网流量；保留 DNS、IPv6 和内网目标的原有路径。') }}</p>
+        <p>{{ t('仅接管所选网卡的 IPv4 TCP/UDP；IPv6 与内网目标保持原有路径。') }}</p>
         <p>{{ t('将启用对应透明代理端口，并把代理监听绑定到所选网卡地址；其他已启用代理端口的可访问范围也会随之变化。') }}</p>
-        <p>{{ t('配置独立防火墙表和必要的策略路由，开启 IPv4 转发；停用时恢复本应用修改的系统规则，保留内核端口设置。') }}</p>
-        <p>{{ t('内核停止时清理规则；开启“保持启用”后，内核就绪时自动核验并恢复。停用并恢复会取消自动恢复意图；设备网关仍需手动指向 NAS。') }}</p>
+        <p>{{ t('配置独立防火墙表、转发放行与源 NAT，并开启 IPv4 转发；检测到 Docker 时会放行 DOCKER-USER。停用时恢复本应用修改的系统规则，保留内核端口设置。') }}</p>
+        <p>{{ t('内核停止时清理规则；开启“保持启用”后，内核就绪时自动核验并恢复。设备网关仍需手动指向 NAS。') }}</p>
         <p v-if="error" class="warn-text" role="alert">{{ error }}</p>
-        <div v-if="plan" class="bypass-plan"><strong>{{ t('预检查通过') }}</strong><p>{{ plan.mode === 'tproxy' ? 'TProxy' : 'Redir' }} · {{ plan.interface.name }} · {{ plan.interface.cidr }} · {{ plan.port }}</p><p>{{ t('配置成功仅代表规则已安装，不代表设备全部流量已被接管。') }}</p></div>
+        <div v-if="plan" class="bypass-plan"><strong>{{ t('预检查通过') }}</strong><p>{{ plan.mode === 'tproxy' ? 'TProxy' : 'Redir' }} · {{ plan.interface.name }} · {{ plan.interface.cidr }} · {{ plan.port }}</p><p v-if="plan.wan">{{ t('转发与源 NAT 出接口：') }}{{ plan.wan }}</p><p v-if="plan.dnsHijack">{{ t('DNS 重定向到本机端口：') }}{{ plan.dnsPort }}</p><p v-for="warning in plan.warnings || []" :key="warning" class="warn-text">{{ t(warning) }}</p><p>{{ t('配置成功仅代表规则已安装，不代表设备全部流量已被接管。') }}</p></div>
 
       </div>
       <template #footer><div class="bypass-setup-actions"><span v-if="checking" role="status">{{ t('正在自动预检查…') }}</span><button v-else-if="error" class="ghost" :disabled="busy || tunEnabled || !iface" @click="preview">{{ t('重新检查') }}</button><button :disabled="busy || checking || tunEnabled || !plan" @click="apply">{{ t(busy ? '处理中…' : '确认配置') }}</button></div></template>

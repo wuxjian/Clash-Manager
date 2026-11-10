@@ -17,16 +17,22 @@ type Store struct {
 	mu   sync.Mutex
 }
 
+type QUICPolicy struct {
+	Domestic string `json:"domestic"`
+	Foreign  string `json:"foreign"`
+}
+
 type Update struct {
-	BypassPageEnabled    *bool   `json:"bypassPageEnabled"`
-	Controller           *string `json:"controller"`
-	Secret               *string `json:"secret"`
-	ClearSecret          bool    `json:"clearSecret"`
-	ControllerAutoDetect *bool   `json:"controllerAutoDetect"`
-	PersistSelections    *bool   `json:"persistSelections"`
-	NotifyAppUpdates     *bool   `json:"notifyAppUpdates"`
-	HealthcheckURL       *string `json:"healthcheckUrl"`
-	HealthcheckTimeout   any     `json:"healthcheckTimeout"`
+	BypassPageEnabled    *bool       `json:"bypassPageEnabled"`
+	Controller           *string     `json:"controller"`
+	Secret               *string     `json:"secret"`
+	ClearSecret          bool        `json:"clearSecret"`
+	ControllerAutoDetect *bool       `json:"controllerAutoDetect"`
+	PersistSelections    *bool       `json:"persistSelections"`
+	NotifyAppUpdates     *bool       `json:"notifyAppUpdates"`
+	HealthcheckURL       *string     `json:"healthcheckUrl"`
+	HealthcheckTimeout   any         `json:"healthcheckTimeout"`
+	QUICPolicy           *QUICPolicy `json:"quicPolicy"`
 }
 
 func (s *Store) WithDocument(operation func(map[string]any) error) error {
@@ -130,13 +136,26 @@ func numberValue(value any, fallback int) int {
 	return fallback
 }
 
+func quicPolicyValue(document map[string]any) map[string]any {
+	domestic, foreign := "direct", "reject"
+	if item, ok := document["quicPolicy"].(map[string]any); ok {
+		if value, ok := item["domestic"].(string); ok && (value == "direct" || value == "reject") {
+			domestic = value
+		}
+		if value, ok := item["foreign"].(string); ok && (value == "reject" || value == "off") {
+			foreign = value
+		}
+	}
+	return map[string]any{"domestic": domestic, "foreign": foreign}
+}
+
 func Public(document map[string]any) map[string]any {
 	secret, _ := document["secret"].(string)
 	timeout := numberValue(document["healthcheckTimeout"], 5000)
 	if timeout < 1000 || timeout > 30000 {
 		timeout = 5000
 	}
-	return map[string]any{"bypassPageEnabled": boolValue(document, "bypassPageEnabled", false), "controller": stringValue(document, "controller", "http://127.0.0.1:9090"), "hasSecret": secret != "", "controllerAutoDetect": boolValue(document, "controllerAutoDetect", true), "persistSelections": boolValue(document, "persistSelections", true), "notifyAppUpdates": boolValue(document, "notifyAppUpdates", true), "healthcheckUrl": stringValue(document, "healthcheckUrl", "http://cp.cloudflare.com/generate_204"), "healthcheckTimeout": timeout}
+	return map[string]any{"bypassPageEnabled": boolValue(document, "bypassPageEnabled", false), "controller": stringValue(document, "controller", "http://127.0.0.1:9090"), "hasSecret": secret != "", "controllerAutoDetect": boolValue(document, "controllerAutoDetect", true), "persistSelections": boolValue(document, "persistSelections", true), "notifyAppUpdates": boolValue(document, "notifyAppUpdates", true), "healthcheckUrl": stringValue(document, "healthcheckUrl", "http://cp.cloudflare.com/generate_204"), "healthcheckTimeout": timeout, "quicPolicy": quicPolicyValue(document)}
 }
 
 func Apply(document map[string]any, update Update) error {
@@ -189,6 +208,23 @@ func Apply(document map[string]any, update Update) error {
 			timeout = 30000
 		}
 		document["healthcheckTimeout"] = timeout
+	}
+	if update.QUICPolicy != nil {
+		domestic := strings.ToLower(strings.TrimSpace(update.QUICPolicy.Domestic))
+		if domestic == "" {
+			domestic = "direct"
+		}
+		foreign := strings.ToLower(strings.TrimSpace(update.QUICPolicy.Foreign))
+		if foreign == "" {
+			foreign = "reject"
+		}
+		if domestic != "direct" && domestic != "reject" {
+			return errors.New("国内 QUIC 策略必须为 direct 或 reject")
+		}
+		if foreign != "reject" && foreign != "off" {
+			return errors.New("国外 QUIC 策略必须为 reject 或 off")
+		}
+		document["quicPolicy"] = map[string]any{"domestic": domestic, "foreign": foreign}
 	}
 	return nil
 }

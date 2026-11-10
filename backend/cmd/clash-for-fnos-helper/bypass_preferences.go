@@ -22,6 +22,7 @@ type bypassPreferences struct {
 	Interface   bypassInterface `json:"interface"`
 	Enabled     bool            `json:"enabled"`
 	KeepEnabled bool            `json:"keepEnabled"`
+	DNSHijack   bool            `json:"dnsHijack,omitempty"`
 	LastError   string          `json:"lastError,omitempty"`
 }
 
@@ -37,7 +38,7 @@ func (h *helper) readBypassPreferences() (*bypassPreferences, error) {
 		return nil, err
 	}
 	var p bypassPreferences
-	if json.Unmarshal(raw, &p) != nil || p.Schema != 1 || (p.Mode != "redir" && p.Mode != "tproxy") || !validBypassInterface(p.Interface) {
+	if json.Unmarshal(raw, &p) != nil || (p.Schema != 1 && p.Schema != 2) || (p.Mode != "redir" && p.Mode != "tproxy") || !validBypassInterface(p.Interface) {
 		return nil, errors.New("接管偏好记录无效，请重新选择接管配置")
 	}
 	return &p, nil
@@ -71,7 +72,7 @@ func (h *helper) updateBypassKeep(body map[string]any) (map[string]any, error) {
 		if s == nil {
 			return nil, fail(409, "请先成功启用一次接管配置")
 		}
-		p = &bypassPreferences{Schema: 1, Mode: s.Mode, Interface: s.Interface, Enabled: true}
+		p = &bypassPreferences{Schema: 2, Mode: s.Mode, Interface: s.Interface, Enabled: true, DNSHijack: s.DNSHijack}
 	}
 	p.KeepEnabled = keep
 	p.LastError = ""
@@ -99,7 +100,7 @@ func (h *helper) stopBypass(ctx context.Context) error {
 			return readErr
 		}
 		if previous != nil {
-			p = &bypassPreferences{Schema: 1, Mode: previous.Mode, Interface: previous.Interface}
+			p = &bypassPreferences{Schema: 1, Mode: previous.Mode, Interface: previous.Interface, DNSHijack: previous.DNSHijack}
 		}
 	}
 
@@ -267,14 +268,14 @@ func (h *helper) restoreBypassLocked(ctx context.Context, p *bypassPreferences, 
 		if e != nil {
 			return e
 		}
-		if exists && owner == "clash-manager:"+s.Token && s.CorePID == pid && s.Mode == p.Mode && s.Interface == p.Interface && s.Port == yamlInteger(string(raw), p.Mode+"-port", 0) {
+		if exists && owner == "clash-manager:"+s.Token && s.CorePID == pid && s.Mode == p.Mode && s.Interface == p.Interface && s.Port == yamlInteger(string(raw), p.Mode+"-port", 0) && s.DNSHijack == p.DNSHijack {
 			return nil
 		}
 		if err = h.cleanupBypassLocked(ctx, 0); err != nil {
 			return err
 		}
 	}
-	plan, err := h.bypassPreflight(ctx, map[string]any{"mode": p.Mode, "interface": p.Interface.Name, "address": p.Interface.Address})
+	plan, err := h.bypassPreflight(ctx, map[string]any{"mode": p.Mode, "interface": p.Interface.Name, "address": p.Interface.Address, "dnsHijack": p.DNSHijack})
 	if err != nil {
 		return err
 	}

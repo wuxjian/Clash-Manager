@@ -145,6 +145,8 @@ func (h *helper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			result, err = h.firewallRules(r.Context())
 		case "/network/bypass":
 			result = h.bypassMonitor(r.Context())
+		case "/network/bypass/lan-probe":
+			result, err = h.bypassLANProbe(r.Context(), nil)
 		case "/network/tun/interface":
 			result = h.tunInterface(r.URL.Query().Get("device"))
 		case "/network/tun/diagnostics":
@@ -226,7 +228,7 @@ func (h *helper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.bypassMu.Unlock()
 		h.mu.Unlock()
 		if err == nil {
-			result = map[string]any{"mode": plan.Mode, "interface": plan.Interface, "port": plan.Port, "ipv4Only": true}
+			result = map[string]any{"mode": plan.Mode, "interface": plan.Interface, "port": plan.Port, "ipv4Only": true, "dnsHijack": plan.DNSHijack, "dnsPort": plan.DNSPort, "wan": plan.WANInterface, "dockerRule": plan.DockerAvailable, "warnings": plan.Warnings}
 		}
 	case "/network/bypass/prepare":
 		result, err = h.prepareBypass(r.Context(), body)
@@ -420,6 +422,14 @@ func run() error {
 	return err
 }
 
+func cleanupBypassCommand() error {
+	cfg := loadConfig()
+	h := newHelper(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	return h.cleanupBypass(ctx, 0)
+}
+
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "--build-info" {
 		if err := appupdate.PrintBuildInfo(os.Stdout, version); err != nil {
@@ -432,6 +442,12 @@ func main() {
 			log.Fatal("更新任务参数无效")
 		}
 		if err := appupdate.Worker(os.Args[2], os.Args[3], os.Args[4]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == "--cleanup-bypass" {
+		if err := cleanupBypassCommand(); err != nil {
 			log.Fatal(err)
 		}
 		return

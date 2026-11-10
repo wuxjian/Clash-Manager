@@ -74,6 +74,8 @@ func (g *gateway) handleSystemAPI(w http.ResponseWriter, r *http.Request, reques
 		g.forwardHelper(w, r, http.MethodGet, "/network/bypass/rules", nil, 6*time.Second)
 	case requestPath == "/api/network/bypass" && r.Method == http.MethodGet:
 		g.forwardHelper(w, r, http.MethodGet, "/network/bypass", nil, 5*time.Second)
+	case requestPath == "/api/network/bypass/lan-probe" && r.Method == http.MethodGet:
+		g.forwardHelper(w, r, http.MethodGet, "/network/bypass/lan-probe", nil, 6*time.Second)
 	case requestPath == "/api/app/icons" && r.Method == http.MethodGet:
 		g.forwardHelper(w, r, http.MethodGet, "/app/icon/status", nil, 10*time.Second)
 	case requestPath == "/api/app/icon" && r.Method == http.MethodPut:
@@ -882,6 +884,21 @@ func (g *gateway) dnsSettings() (bool, map[string]any, error) {
 	return enabled, dns, err
 }
 
+func (g *gateway) dnsEditorSettings() (string, string) {
+	mode, text := "form", ""
+	document, err := g.settings.ReadDocument()
+	if err != nil {
+		return mode, text
+	}
+	if value, ok := document["dnsEditorMode"].(string); ok && value == "yaml" {
+		mode = "yaml"
+	}
+	if value, ok := document["dnsYAML"].(string); ok {
+		text = value
+	}
+	return mode, text
+}
+
 func (g *gateway) networkSettings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	var status map[string]any
@@ -903,6 +920,7 @@ func (g *gateway) networkSettings(w http.ResponseWriter, r *http.Request) {
 		settings = map[string]any{}
 	}
 	settings["dnsOverrideEnabled"], settings["dns"] = enabled, dns
+	settings["dnsEditorMode"], settings["dnsYAML"] = g.dnsEditorSettings()
 	status["settings"] = settings
 	writeJSON(w, 200, status)
 }
@@ -936,19 +954,39 @@ func (g *gateway) updateNetworkSettings(w http.ResponseWriter, r *http.Request) 
 	if value, ok := input["dns"].(map[string]any); ok {
 		nextDNS = value
 	}
+	currentMode, currentYAML := g.dnsEditorSettings()
+	nextMode, nextYAML := currentMode, currentYAML
+	_, hasMode := input["dnsEditorMode"]
+	if value, ok := input["dnsEditorMode"].(string); ok {
+		nextMode, hasMode = value, true
+	}
+	if nextMode != "form" && nextMode != "yaml" {
+		writeJSON(w, 400, map[string]string{"error": "DNS 编辑模式无效"})
+		return
+	}
+	_, hasYAML := input["dnsYAML"]
+	if value, ok := input["dnsYAML"].(string); ok {
+		nextYAML, hasYAML = value, true
+	}
 	_, hasDNS := input["dns"]
 	_, hasEnabled := input["dnsOverrideEnabled"]
 	delete(input, "dns")
 	delete(input, "dnsOverrideEnabled")
-	if nextEnabled && (hasDNS || hasEnabled) {
-		input["dns"] = nextDNS
+	delete(input, "dnsEditorMode")
+	delete(input, "dnsYAML")
+	if nextEnabled && (hasDNS || hasEnabled || hasMode || hasYAML) {
+		if nextMode == "yaml" {
+			input["dnsEditorMode"], input["dnsYAML"] = "yaml", nextYAML
+		} else {
+			input["dns"] = nextDNS
+		}
 	}
 	if len(input) == 0 {
-		err = g.saveDNSSettings(nextEnabled, nextDNS)
+		err = g.saveDNSSettings(nextEnabled, nextDNS, nextMode, nextYAML)
 		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 		} else {
-			writeJSON(w, 200, map[string]any{"ok": true, "savedOnly": true, "settings": map[string]any{"dnsOverrideEnabled": nextEnabled, "dns": nextDNS}})
+			writeJSON(w, 200, map[string]any{"ok": true, "savedOnly": true, "settings": map[string]any{"dnsOverrideEnabled": nextEnabled, "dns": nextDNS, "dnsEditorMode": nextMode, "dnsYAML": nextYAML}})
 		}
 		return
 	}
@@ -956,6 +994,13 @@ func (g *gateway) updateNetworkSettings(w http.ResponseWriter, r *http.Request) 
 	if err = g.helperJSON(r.Context(), http.MethodPost, "/network/update", input, &prepared, time.Minute); err != nil {
 		writeJSON(w, 502, map[string]string{"error": err.Error()})
 		return
+	}
+	if nextMode == "yaml" {
+		if preparedSettings, ok := prepared["settings"].(map[string]any); ok {
+			if parsed, ok := preparedSettings["dns"].(map[string]any); ok {
+				nextDNS = parsed
+			}
+		}
 	}
 	txID := fmt.Sprint(prepared["txId"])
 	previousDevice := ""
@@ -1056,10 +1101,11 @@ func (g *gateway) updateNetworkSettings(w http.ResponseWriter, r *http.Request) 
 		err = g.settings.WithDocument(func(document map[string]any) error {
 			document["controller"], document["controllerAutoDetect"] = strings.TrimRight(controller, "/"), true
 			document["dnsOverrideEnabled"], document["dnsOverrideSettings"] = nextEnabled, nextDNS
+			document["dnsEditorMode"], document["dnsYAML"] = nextMode, nextYAML
 			return nil
 		})
 	} else {
-		err = g.saveDNSSettings(nextEnabled, nextDNS)
+		err = g.saveDNSSettings(nextEnabled, nextDNS, nextMode, nextYAML)
 	}
 	if err == nil && activation["method"] != "saved-only" {
 		setStage("4/4 正在确认 Controller 连接…")
@@ -1108,13 +1154,15 @@ func (g *gateway) updateNetworkSettings(w http.ResponseWriter, r *http.Request) 
 		settings = map[string]any{}
 	}
 	settings["dnsOverrideEnabled"], settings["dns"] = nextEnabled, nextDNS
+	settings["dnsEditorMode"], settings["dnsYAML"] = nextMode, nextYAML
 	tunSaveSucceeded = true
 	writeJSON(w, 200, map[string]any{"ok": true, "settings": settings, "controller": controller, "configPath": prepared["target"], "backup": prepared["backup"], "validation": prepared["validation"], "activation": activation["method"], "activationReason": activation["reason"], "warning": nil, "proxyEnvironment": proxy, "tunCapability": prepared["tunCapability"]})
 }
 
-func (g *gateway) saveDNSSettings(enabled bool, dns map[string]any) error {
+func (g *gateway) saveDNSSettings(enabled bool, dns map[string]any, mode, yamlText string) error {
 	return g.settings.WithDocument(func(document map[string]any) error {
 		document["dnsOverrideEnabled"], document["dnsOverrideSettings"] = enabled, dns
+		document["dnsEditorMode"], document["dnsYAML"] = mode, yamlText
 		return nil
 	})
 }

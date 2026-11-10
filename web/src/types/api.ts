@@ -352,6 +352,7 @@ export interface NetworkSetting {
   controller?: { host?: string; port?: number }
   mixed?: PortSetting; socks?: PortSetting; http?: PortSetting; redir?: PortSetting; tproxy?: PortSetting
   allowLan?: boolean; bindAddress?: string; dnsEnabled?: boolean; dnsOverrideEnabled?: boolean; dns?: DnsSetting
+  dnsEditorMode?: 'form' | 'yaml'; dnsYAML?: string; dnsListen?: string; dnsLanReachable?: boolean
   proxyAuthentication?: ProxyAuthentication
   core?: { ipv6?: boolean; unifiedDelay?: boolean }; tun?: TunSetting
 }

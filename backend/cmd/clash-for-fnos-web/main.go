@@ -811,6 +811,7 @@ func (g *gateway) handleSettings(w http.ResponseWriter, r *http.Request, request
 		writeJSON(w, 400, map[string]string{"error": "JSON 格式错误"})
 		return true
 	}
+	before, _ := g.settings.ReadPublic()
 	err := g.settings.WithDocument(func(document map[string]any) error {
 		if err := appsettings.Apply(document, update); err != nil {
 			return err
@@ -831,9 +832,18 @@ func (g *gateway) handleSettings(w http.ResponseWriter, r *http.Request, request
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 	} else {
+		if update.QUICPolicy != nil && quicPolicyDiffers(before["quicPolicy"], payload["quicPolicy"]) {
+			payload["quicPolicyChanged"] = true
+		}
 		writeJSON(w, 200, payload)
 	}
 	return true
+}
+
+func quicPolicyDiffers(before, after any) bool {
+	left, _ := before.(map[string]any)
+	right, _ := after.(map[string]any)
+	return left["domestic"] != right["domestic"] || left["foreign"] != right["foreign"]
 }
 
 func (g *gateway) syncControllerSettings(ctx context.Context) {

@@ -24,6 +24,43 @@ const profileJobs = reactive<Record<string, ProfileJob>>({})
 const extensionProfile = ref<ProfileItem | null>(null), extensionKind = ref<ProfileExtensionKind | null>(null)
 const extensionGlobal = ref(false)
 const ruleImportOpen = ref(false), ruleImportProfile = ref<ProfileItem | null>(null)
+const quic = reactive({ domestic: 'direct', foreign: 'reject', busy: false })
+const currentProfileId = computed(() => items.value.find(item => item.current)?.id || '')
+const quicRules = computed(() => {
+  if (quic.domestic === 'reject') return ['AND,((NETWORK,UDP),(DST-PORT,443)),REJECT']
+  const rules = [
+    'AND,((NETWORK,UDP),(DST-PORT,443),(GEOSITE,cn)),DIRECT',
+    'AND,((NETWORK,UDP),(DST-PORT,443),(GEOIP,CN)),DIRECT',
+  ]
+  if (quic.foreign === 'reject') rules.push('AND,((NETWORK,UDP),(DST-PORT,443)),REJECT')
+  return rules
+})
+async function loadQuic() {
+  try {
+    const settings = await api<{ quicPolicy?: { domestic?: string; foreign?: string } }>('/api/settings')
+    if (settings.quicPolicy) {
+      quic.domestic = settings.quicPolicy.domestic === 'reject' ? 'reject' : 'direct'
+      quic.foreign = settings.quicPolicy.foreign === 'off' ? 'off' : 'reject'
+    }
+  } catch { /* settings are optional until the first save */ }
+}
+async function saveQuic() {
+  if (quic.busy) return
+  quic.busy = true
+  try {
+    const result = await api<{ quicPolicyChanged?: boolean }>('/api/settings', jsonRequest('PUT', { quicPolicy: { domestic: quic.domestic, foreign: quic.foreign } }))
+    if (result.quicPolicyChanged && currentProfileId.value) {
+      await api(`/api/profiles/${currentProfileId.value}/apply-system`, { method: 'POST' })
+      notify('QUIC 策略已保存并应用')
+    } else {
+      notify('QUIC 策略已保存')
+    }
+  } catch (cause) {
+    notify(errorMessage(cause), true)
+  } finally {
+    quic.busy = false
+  }
+}
 function openRuleImport(item?: ProfileItem) {
   closeEditMenu()
   ruleImportProfile.value = item || null
@@ -172,7 +209,7 @@ async function remove(item: ProfileItem) {
 onMounted(() => {
   window.addEventListener('pointerdown', handlePagePointerDown)
   window.addEventListener('keydown', handlePageKeydown)
-  return Promise.all([loadProfiles(), scan()])
+  return Promise.all([loadProfiles(), scan(), loadQuic()])
 })
 onBeforeUnmount(() => {
   alive = false
@@ -257,6 +294,21 @@ onBeforeUnmount(() => {
         <span class="global-extension-icon script" aria-hidden="true">JS</span>
         <span class="global-extension-copy"><strong>{{ t("全局扩展脚本") }}</strong><small>{{ t("全局覆写后、单配置增强前执行") }}</small></span>
         <span class="global-extension-actions"><span class="tag">Script</span><button type="button" class="ghost small global-extension-edit" :aria-label="t('编辑全局扩展脚本')" @click="openGlobalExtension('script')">{{ t("编辑") }}</button></span>
+      </div>
+    <div class="global-extension-card quic-policy-card">
+        <span class="global-extension-icon" aria-hidden="true">Q</span>
+        <span class="global-extension-copy"><strong>{{ t("QUIC 策略") }}</strong><small>{{ t("UDP 443：国内直连、国外拒绝后回落 TCP；仅 TProxy/TUN 生效") }}</small></span>
+        <span class="global-extension-actions quic-policy-actions">
+          <select v-model="quic.domestic" :disabled="quic.busy" :aria-label="t('国内 QUIC')" @change="saveQuic">
+            <option value="direct">{{ t("国内：直连") }}</option>
+            <option value="reject">{{ t("国内：拒绝") }}</option>
+          </select>
+          <select v-model="quic.foreign" :disabled="quic.busy" :aria-label="t('国外 QUIC')" @change="saveQuic">
+            <option value="reject">{{ t("国外：拒绝") }}</option>
+            <option value="off">{{ t("国外：不处理") }}</option>
+          </select>
+        </span>
+        <span class="quic-policy-preview mono">{{ quicRules.join('\n') }}</span>
       </div>
     </div></details>
   </div>
