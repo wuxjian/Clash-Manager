@@ -1163,13 +1163,23 @@ func renderYAML(key string, value any) string {
 }
 
 func normalizeDNSForYAML(input map[string]any) (map[string]any, any) {
+	// Collapse camelCase aliases onto their YAML keys. When both spellings are
+	// present (for example a stored YAML block merged over the form defaults),
+	// the explicit kebab-case value wins instead of emitting a duplicate key.
 	dns := map[string]any{}
 	for key, value := range input {
-		dns[key] = value
+		if mapped := yamlKey(key); mapped != key {
+			dns[mapped] = value
+		}
+	}
+	for key, value := range input {
+		if mapped := yamlKey(key); mapped == key {
+			dns[key] = value
+		}
 	}
 	hosts := dns["hosts"]
 	delete(dns, "hosts")
-	if policies, ok := dns["nameserverPolicy"].([]any); ok {
+	if policies, ok := dns["nameserver-policy"].([]any); ok {
 		mapping := map[string]any{}
 		for _, item := range policies {
 			if entry, ok := item.(map[string]any); ok {
@@ -1179,13 +1189,22 @@ func normalizeDNSForYAML(input map[string]any) (map[string]any, any) {
 				}
 			}
 		}
-		dns["nameserverPolicy"] = mapping
+		dns["nameserver-policy"] = mapping
 	}
-	fallback := map[string]any{"geoip": dns["fallbackGeoip"], "geoip-code": dns["fallbackGeoipCode"], "ipcidr": dns["fallbackIpCidr"], "domain": dns["fallbackDomain"]}
-	for _, key := range []string{"fallbackGeoip", "fallbackGeoipCode", "fallbackIpCidr", "fallbackDomain"} {
-		delete(dns, key)
+	fallbackKeys := []string{"fallbackGeoip", "fallbackGeoipCode", "fallbackIpCidr", "fallbackDomain"}
+	present := false
+	for _, key := range fallbackKeys {
+		if _, ok := dns[key]; ok {
+			present = true
+			break
+		}
 	}
-	dns["fallback-filter"] = fallback
+	if present {
+		dns["fallback-filter"] = map[string]any{"geoip": dns["fallbackGeoip"], "geoip-code": dns["fallbackGeoipCode"], "ipcidr": dns["fallbackIpCidr"], "domain": dns["fallbackDomain"]}
+		for _, key := range fallbackKeys {
+			delete(dns, key)
+		}
+	}
 	return dns, hosts
 }
 func hostMap(value any) map[string]any {

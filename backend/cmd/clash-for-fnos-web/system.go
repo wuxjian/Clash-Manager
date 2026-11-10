@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -874,14 +875,69 @@ func (g *gateway) dnsSettings() (bool, map[string]any, error) {
 	dns := defaultDNSSettings()
 	err := g.settings.WithDocument(func(document map[string]any) error {
 		enabled, _ = document["dnsOverrideEnabled"].(bool)
-		if stored, ok := document["dnsOverrideSettings"].(map[string]any); ok {
-			for key, value := range stored {
-				dns[key] = value
-			}
+		stored, ok := document["dnsOverrideSettings"].(map[string]any)
+		if !ok {
+			return nil
+		}
+		if document["dnsEditorMode"] == "yaml" {
+			// YAML mode stores a complete DNS block; expose it as the form DTO
+			// so the form fields and the compose path stay camelCase.
+			dns = dnsYAMLToForm(stored)
+			return nil
+		}
+		for key, value := range stored {
+			dns[key] = value
 		}
 		return nil
 	})
 	return enabled, dns, err
+}
+
+// dnsYAMLToForm converts a parsed DNS YAML block into the camelCase form DTO.
+// Persisting YAML keys directly would mix them with the form defaults and emit
+// both spellings of the same key during the next profile compose.
+func dnsYAMLToForm(input map[string]any) map[string]any {
+	camel := map[string]string{
+		"enhanced-mode": "enhancedMode", "fake-ip-range": "fakeIpRange", "fake-ip-range6": "fakeIpRange6",
+		"fake-ip-filter-mode": "fakeIpFilterMode", "fake-ip-filter": "fakeIpFilter", "prefer-h3": "preferH3",
+		"respect-rules": "respectRules", "use-hosts": "useHosts", "use-system-hosts": "useSystemHosts",
+		"direct-nameserver-follow-policy": "directNameserverFollowPolicy",
+		"default-nameserver":              "defaultNameserver", "proxy-server-nameserver": "proxyServerNameserver",
+		"direct-nameserver": "directNameserver",
+	}
+	out := map[string]any{}
+	for key, value := range input {
+		switch key {
+		case "fallback-filter":
+			continue
+		case "nameserver-policy":
+			list := []any{}
+			if mapping, ok := value.(map[string]any); ok {
+				names := make([]string, 0, len(mapping))
+				for matcher := range mapping {
+					names = append(names, matcher)
+				}
+				sort.Strings(names)
+				for _, matcher := range names {
+					list = append(list, map[string]any{"matcher": matcher, "servers": mapping[matcher]})
+				}
+			}
+			out["nameserverPolicy"] = list
+		default:
+			if mapped, ok := camel[key]; ok {
+				out[mapped] = value
+			} else {
+				out[key] = value
+			}
+		}
+	}
+	if filter, ok := input["fallback-filter"].(map[string]any); ok {
+		out["fallbackGeoip"] = filter["geoip"]
+		out["fallbackGeoipCode"] = filter["geoip-code"]
+		out["fallbackIpCidr"] = filter["ipcidr"]
+		out["fallbackDomain"] = filter["domain"]
+	}
+	return out
 }
 
 func (g *gateway) dnsEditorSettings() (string, string) {
@@ -998,7 +1054,7 @@ func (g *gateway) updateNetworkSettings(w http.ResponseWriter, r *http.Request) 
 	if nextMode == "yaml" {
 		if preparedSettings, ok := prepared["settings"].(map[string]any); ok {
 			if parsed, ok := preparedSettings["dns"].(map[string]any); ok {
-				nextDNS = parsed
+				nextDNS = dnsYAMLToForm(parsed)
 			}
 		}
 	}

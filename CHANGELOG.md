@@ -2,6 +2,11 @@
 
 本项目的重要版本变化记录在此。公共程序版本由根目录 `VERSION` 统一管理；fnOS 包版本由 fnOS 仓库的 manifest 管理。
 
+## [1.6.42] - 2026-11-10
+
+- 修复高级 DNS YAML 保存后再次应用订阅时，DNS 配置以 camelCase 与 kebab-case 两种拼写同时写入，导致 `mapping key already defined` 的问题。
+- 应用订阅时统一 DNS 键名；YAML 模式保存的设置会转换为表单结构，切换回表单也能显示。
+
 ## [1.6.41] - 2026-11-10
 
 - 修复 DNS 高级 YAML 替换时，DNS 段内的顶层注释会提前结束跳过，导致新旧 DNS 键重复并报 `mapping key already defined` 的问题。

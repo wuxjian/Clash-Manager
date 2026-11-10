@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestReplaceTopLevelPreservesPositionAndOtherSections(t *testing.T) {
@@ -35,6 +37,32 @@ func TestReplaceTopLevelRemovesCommentsInsideSection(t *testing.T) {
 	}
 	if strings.Count(got, "dns:") != 1 {
 		t.Fatalf("duplicate dns section:\n%s", got)
+	}
+}
+
+func TestNormalizeDNSForYAMLCollapsesAliases(t *testing.T) {
+	input := map[string]any{
+		"enable": true, "enhancedMode": "fake-ip", "enhanced-mode": "redir-host",
+		"respectRules": true, "respect-rules": false,
+		"defaultNameserver": []any{}, "default-nameserver": []any{"223.5.5.5"},
+		"nameserverPolicy": []any{}, "nameserver-policy": map[string]any{"geosite:cn": []any{"223.5.5.5"}},
+		"fallbackGeoip": true, "fallbackGeoipCode": "CN", "fallbackIpCidr": []any{"240.0.0.0/4"},
+		"proxyServerNameserver": []any{}, "proxy-server-nameserver": []any{"https://doh.pub/dns-query"},
+	}
+	normalized, _ := normalizeDNSForYAML(input)
+	var document map[string]any
+	if err := yaml.Unmarshal([]byte(renderYAML("dns", normalized)), &document); err != nil {
+		t.Fatalf("duplicate keys survived normalization: %v\n%s", err, renderYAML("dns", normalized))
+	}
+	dns, _ := document["dns"].(map[string]any)
+	if dns["enhanced-mode"] != "redir-host" || dns["respect-rules"] != false {
+		t.Fatalf("kebab-case values did not win: %#v", dns)
+	}
+	if _, ok := dns["nameserver-policy"].(map[string]any); !ok {
+		t.Fatalf("nameserver-policy shape changed: %#v", dns["nameserver-policy"])
+	}
+	if _, ok := dns["fallback-filter"].(map[string]any); !ok {
+		t.Fatalf("fallback-filter missing: %#v", dns)
 	}
 }
 
