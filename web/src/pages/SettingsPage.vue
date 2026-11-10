@@ -1078,7 +1078,9 @@ onBeforeUnmount(() => window.removeEventListener('focus', refreshLogDisplayOnFoc
 /* The former accordion shell must not clip the inset DNS panel corners. */
 .settings-compact .dns-settings-panel { overflow: visible; border-radius: 0; }
 .dns-editor-mode { display: flex; align-items: center; gap: 8px; margin: 10px 0 12px; flex-wrap: wrap; }
-.dns-editor-mode button.active { border-color: var(--accent); color: var(--accent); }
+.dns-editor-mode button { background: transparent; color: var(--muted); border: 1px solid var(--line); box-shadow: none; }
+.dns-editor-mode button.active { background: var(--accent); color: var(--accent-ink, #fff); border-color: var(--accent); }
+.dns-editor-mode button.ghost.small { background: transparent; color: var(--accent); }
 .dns-yaml-editor { margin-bottom: 12px; }
 .dns-yaml-input { width: 100%; min-height: 360px; resize: vertical; }
 .dns-warning { color: var(--warning, #b26a00); }

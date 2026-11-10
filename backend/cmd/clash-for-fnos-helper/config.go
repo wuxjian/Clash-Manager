@@ -1051,7 +1051,7 @@ func replaceTopLevel(raw, key, rendered string) string {
 	for _, line := range lines {
 		trim := strings.TrimSpace(line)
 		indent := len(line) - len(strings.TrimLeft(line, " "))
-		if skip && trim != "" && indent == 0 {
+		if skip && trim != "" && !strings.HasPrefix(trim, "#") && indent == 0 {
 			skip = false
 		}
 		if !skip && indent == 0 && strings.HasPrefix(trim, key+":") {

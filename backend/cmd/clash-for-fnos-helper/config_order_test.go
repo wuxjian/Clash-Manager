@@ -27,6 +27,17 @@ func TestReplaceTopLevelPreservesPositionAndOtherSections(t *testing.T) {
 	}
 }
 
+func TestReplaceTopLevelRemovesCommentsInsideSection(t *testing.T) {
+	raw := "port: 7890\ndns:\n  enable: true\n# DNS notes\n  default-nameserver:\n    - 8.8.8.8\ntun:\n  enable: false\n"
+	got := replaceTopLevel(raw, "dns", "dns:\n  enable: true\n  default-nameserver:\n    - 223.5.5.5")
+	if strings.Contains(got, "8.8.8.8") {
+		t.Fatalf("old section content remained:\n%s", got)
+	}
+	if strings.Count(got, "dns:") != 1 {
+		t.Fatalf("duplicate dns section:\n%s", got)
+	}
+}
+
 func TestNetworkSavesHaveStableFieldAndSequenceOrder(t *testing.T) {
 	h := offlineNetworkHelper(t)
 	ctx := context.Background()
