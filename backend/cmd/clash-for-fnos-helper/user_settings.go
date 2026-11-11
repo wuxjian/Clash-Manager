@@ -173,16 +173,15 @@ func (h *helper) composeUserSettings(input map[string]any) (map[string]any, erro
 	delete(settings, configyaml.IndependentListenersKey)
 	delete(settings, independentProfilesKey)
 	content := []byte(stringField(input, "content"))
+	prepended := []string{configyaml.NTPDirectRule}
 	if policy, ok := input["quicPolicy"].(map[string]any); ok {
 		domestic, _ := policy["domestic"].(string)
 		foreign, _ := policy["foreign"].(string)
-		rules := configyaml.QUICRules(configyaml.QUICPolicy{Domestic: domestic, Foreign: foreign})
-		if len(rules) > 0 {
-			content, err = configyaml.PrependRules(content, rules)
-			if err != nil {
-				return nil, fail(400, err.Error())
-			}
-		}
+		prepended = append(prepended, configyaml.QUICRules(configyaml.QUICPolicy{Domestic: domestic, Foreign: foreign})...)
+	}
+	content, err = configyaml.PrependRules(content, prepended)
+	if err != nil {
+		return nil, fail(400, err.Error())
 	}
 	content, err = configyaml.MergeOverrides(content, settings)
 	if err != nil {

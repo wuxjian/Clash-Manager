@@ -25,7 +25,6 @@ default-nameserver:
 nameserver:
   - "https://doh.pub/dns-query"
   - "https://dns.alidns.com/dns-query"
-  - "tls://223.5.5.5"
 
 fallback:
   - "https://1.1.1.1/dns-query"

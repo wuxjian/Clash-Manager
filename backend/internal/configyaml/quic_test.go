@@ -37,6 +37,28 @@ func TestQUICRules(t *testing.T) {
 	}
 }
 
+func TestSystemRulesPrependNTPFirst(t *testing.T) {
+	rules := append([]string{NTPDirectRule}, QUICRules(QUICPolicy{})...)
+	got, err := PrependRules([]byte("rules:\n  - MATCH,DIRECT\n"), rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	ntp := strings.Index(text, NTPDirectRule)
+	if ntp < 0 {
+		t.Fatalf("NTP rule missing:\n%s", text)
+	}
+	for _, rule := range QUICRules(QUICPolicy{}) {
+		index := strings.Index(text, rule)
+		if index < 0 || index < ntp {
+			t.Fatalf("QUIC rule not after NTP: %s\n%s", rule, text)
+		}
+	}
+	if strings.Count(text, "DST-PORT,123") != 1 {
+		t.Fatalf("duplicate NTP rule:\n%s", text)
+	}
+}
+
 func TestPrependRulesPreservesDocument(t *testing.T) {
 	raw := []byte("port: 7890\nrules:\n    - DOMAIN-SUFFIX,a.com,PROXY\n    - MATCH,DIRECT\n")
 	got, err := PrependRules(raw, []string{"AND,((NETWORK,UDP),(DST-PORT,443)),REJECT"})

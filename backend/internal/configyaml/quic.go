@@ -5,6 +5,10 @@ import (
 	"strings"
 )
 
+// NTPDirectRule keeps time synchronization off the proxy path. NTP through a
+// proxy drifts because the proxy adds variable latency.
+const NTPDirectRule = "AND,((NETWORK,UDP),(DST-PORT,123)),DIRECT"
+
 // QUICPolicy controls how UDP/443 (QUIC) traffic is routed.
 //
 // Domestic accepts "direct" or "reject"; "direct" keeps QUIC on the local
