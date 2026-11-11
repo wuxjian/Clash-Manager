@@ -810,11 +810,13 @@ onBeforeUnmount(() => window.removeEventListener('focus', refreshLogDisplayOnFoc
             <div class="tun-note"><strong>{{ t("注意") }}</strong><span>{{ t(runtime.platform === 'linux' ? 'TUN 会修改 Linux 主机的系统路由与 DNS 流向。' : runtime.platform === 'docker' ? 'TUN 修改所在网络命名空间的路由。Host 网络下作用于宿主；Bridge 网络下作用于容器。' : 'TUN 会修改 fnOS 的系统路由与 DNS 流向。') }}{{ t("默认关闭；配置不可用时可能影响访问互联网。") }}</span></div>
           </div>
 
-          <div v-else-if="category.key === 'dns'" class="settings-accordion-panel dns-settings-panel" :class="{ 'dns-on': network.dnsOverrideEnabled }">
+          <div v-else-if="category.key === 'dns'" class="settings-accordion-panel dns-settings-panel" :class="{ 'dns-on': network.dnsOverrideEnabled, 'dns-yaml-mode': network.dnsEditorMode === 'yaml' }">
             <div class="dns-overview"><div><strong>{{ t("DNS 覆写") }}</strong><span>{{ t("默认关闭；关闭时只保存 DNS 模板，不写入当前启动配置") }}</span></div><label class="switch large"><input v-model="network.dnsOverrideEnabled" type="checkbox" @change="saveDns(120)"><span /></label></div>
-            <div class="dns-editor-mode">
-              <button type="button" :class="{ active: network.dnsEditorMode === 'form' }" @click="switchDnsMode('form')">{{ t("表单") }}</button>
-              <button type="button" :class="{ active: network.dnsEditorMode === 'yaml' }" @click="switchDnsMode('yaml')">{{ t("高级 YAML") }}</button>
+            <div class="dns-editor-toolbar">
+              <div class="dns-editor-mode" role="tablist" :aria-label="t('DNS 编辑模式')">
+                <button type="button" role="tab" :aria-selected="network.dnsEditorMode === 'form'" :class="{ active: network.dnsEditorMode === 'form' }" @click="switchDnsMode('form')">{{ t("表单") }}</button>
+                <button type="button" role="tab" :aria-selected="network.dnsEditorMode === 'yaml'" :class="{ active: network.dnsEditorMode === 'yaml' }" @click="switchDnsMode('yaml')">{{ t("高级 YAML") }}</button>
+              </div>
               <button type="button" class="ghost small" @click="loadDnsPreset">{{ t("载入旁路由 DNS 预设") }}</button>
             </div>
             <div v-if="network.dnsEditorMode === 'yaml'" class="field dns-yaml-editor">
@@ -1077,12 +1079,14 @@ onBeforeUnmount(() => window.removeEventListener('focus', refreshLogDisplayOnFoc
 .settings-compact :deep(.auth-setting > button) { min-height: 30px; padding: 5px 10px; font-size: 12px; }
 /* The former accordion shell must not clip the inset DNS panel corners. */
 .settings-compact .dns-settings-panel { overflow: visible; border-radius: 0; }
-.dns-editor-mode { display: flex; align-items: center; gap: 8px; margin: 10px 0 12px; flex-wrap: wrap; }
-.dns-editor-mode button { background: transparent; color: var(--muted); border: 1px solid var(--line); box-shadow: none; }
-.dns-editor-mode button.active { background: var(--accent); color: var(--accent-ink, #fff); border-color: var(--accent); }
-.dns-editor-mode button.ghost.small { background: transparent; color: var(--accent); }
-.dns-yaml-editor { margin-bottom: 12px; }
-.dns-yaml-input { width: 100%; min-height: 360px; resize: vertical; }
+.dns-editor-toolbar { display: flex; align-items: center; gap: 10px; margin: 10px 0 12px; flex-wrap: wrap; }
+.dns-editor-mode { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-inset); }
+.dns-editor-mode button { border: 0; border-radius: 7px; background: transparent; color: var(--muted); padding: 5px 14px; font-size: 12px; line-height: 18px; box-shadow: none; }
+.dns-editor-mode button:hover { color: var(--text); }
+.dns-editor-mode button.active { background: var(--panel); color: var(--accent); box-shadow: 0 1px 2px rgba(0, 0, 0, .14); }
+.dns-editor-mode button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.dns-yaml-editor { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.dns-yaml-input { width: 100%; min-height: 360px; height: max(360px, calc(100vh - 380px)); resize: vertical; }
 .dns-warning { color: var(--warning, #b26a00); }
 .settings-compact .dns-tab-panel { padding: 10px; border-radius: 9px; }
 .settings-compact .section-head { margin-bottom: 10px; }

@@ -86,7 +86,7 @@ onBeforeUnmount(cancelPreview)
         <label>{{ t('接管模式') }}<AppSelect v-model="mode" :label="t('接管模式')" :disabled="busy" :options="[{ value: 'tproxy', label: 'TProxy · TCP / UDP' }, { value: 'redir', label: 'Redir · TCP' }]" /></label>
         <label>{{ t('接入网卡') }}<AppSelect v-model="selected" :label="t('接入网卡')" :disabled="busy" :options="interfaces.map(item => ({ value: `${item.name}/${item.address}`, label: `${item.name} · ${item.address} · ${item.cidr}` }))" /></label>
         <SettingToggle v-model="keepEnabled" :title="t('保持启用')" :description="t('内核重启或配置重新应用后自动核验并恢复接管规则。')" :disabled="busy" />
-        <SettingToggle v-model="dnsHijack" :title="t('接管 DNS')" :description="t('把客户端 53 端口重定向到 Mihomo DNS；复用 DNS 设置里的监听地址，不会自动修改。')" :disabled="busy" />
+        <SettingToggle v-model="dnsHijack" :title="t('接管 DNS')" :description="t('把局域网设备发往 53 端口的 DNS 请求重定向到 NAS 上的 Mihomo DNS；设备仍填主路由 DNS 也会被接管。不会修改 DNS 设置里的监听地址。')" :disabled="busy" />
         <p v-if="dnsHijack && !presetDns" class="warn-text">{{ t('DNS 设置未启用或只监听回环地址，开启接管 DNS 前请先到 DNS 与解析中改为 0.0.0.0:53。') }}</p>
         <p>{{ t('仅支持运行中的托管内核；请先关闭 TUN，避免重复接管。') }}</p>
         <p>{{ t('仅接管所选网卡的 IPv4 TCP/UDP；IPv6 与内网目标保持原有路径。') }}</p>

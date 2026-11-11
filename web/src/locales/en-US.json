@@ -2285,5 +2285,11 @@
   "未检测到默认路由，未启用源 NAT": "No default route; source NAT was not enabled",
   "已添加 DOCKER-USER 放行规则。": "A DOCKER-USER allow rule is present.",
   "复用 DNS 设置里的监听地址，停用时不会修改 DNS 配置。": "Reuses the DNS listen address; stopping does not modify DNS settings.",
-  "· DNS 接管": "· DNS intercepted"
+  "· DNS 接管": "· DNS intercepted",
+  "国内": "Domestic",
+  "国外": "Foreign",
+  "拒绝": "Reject",
+  "不处理": "Leave alone",
+  "DNS 编辑模式": "DNS editor mode",
+  "把局域网设备发往 53 端口的 DNS 请求重定向到 NAS 上的 Mihomo DNS；设备仍填主路由 DNS 也会被接管。不会修改 DNS 设置里的监听地址。": "Redirect LAN clients' DNS requests on port 53 to Mihomo DNS on the NAS; devices that still use the main router's DNS are intercepted too. The DNS listen address is not modified."
 }

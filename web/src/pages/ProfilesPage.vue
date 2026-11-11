@@ -3,6 +3,7 @@ import { t, getLocale } from '@/services/i18n'
 
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import AsyncState from '@/components/AsyncState.vue'
+import AppSelect from '@/components/AppSelect.vue'
 import BaseModal from '@/components/BaseModal.vue'
 import ConfigErrorNotice from '@/components/ConfigErrorNotice.vue'
 import { describeConfigError } from '@/services/config-error'
@@ -299,14 +300,8 @@ onBeforeUnmount(() => {
         <span class="global-extension-icon" aria-hidden="true">Q</span>
         <span class="global-extension-copy"><strong>{{ t("QUIC 策略") }}</strong><small>{{ t("UDP 443：国内直连、国外拒绝后回落 TCP；仅 TProxy/TUN 生效") }}</small></span>
         <span class="global-extension-actions quic-policy-actions">
-          <select v-model="quic.domestic" :disabled="quic.busy" :aria-label="t('国内 QUIC')" @change="saveQuic">
-            <option value="direct">{{ t("国内：直连") }}</option>
-            <option value="reject">{{ t("国内：拒绝") }}</option>
-          </select>
-          <select v-model="quic.foreign" :disabled="quic.busy" :aria-label="t('国外 QUIC')" @change="saveQuic">
-            <option value="reject">{{ t("国外：拒绝") }}</option>
-            <option value="off">{{ t("国外：不处理") }}</option>
-          </select>
+          <label class="quic-policy-field"><span>{{ t("国内") }}</span><AppSelect v-model="quic.domestic" class="quic-policy-select" :label="t('国内 QUIC')" :disabled="quic.busy" :options="[{ value: 'direct', label: t('直连') }, { value: 'reject', label: t('拒绝') }]" @change="saveQuic" /></label>
+          <label class="quic-policy-field"><span>{{ t("国外") }}</span><AppSelect v-model="quic.foreign" class="quic-policy-select" :label="t('国外 QUIC')" :disabled="quic.busy" :options="[{ value: 'reject', label: t('拒绝') }, { value: 'off', label: t('不处理') }]" @change="saveQuic" /></label>
         </span>
         <span class="quic-policy-preview mono">{{ quicRules.join('\n') }}</span>
       </div>
